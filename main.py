@@ -196,48 +196,39 @@ async def check_reminders(context: ContextTypes.DEFAULT_TYPE) -> None:
 
 
 def main() -> None:
-    """Запускает бота."""
-    # Получаем токен бота из переменной окружения
-    BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN") # <-- Вот это изменение!
+    """Запускает бота и Flask-сервер."""
+    BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
     if not BOT_TOKEN:
         raise Exception("TELEGRAM_BOT_TOKEN environment variable is not set! Please set it.")
 
     # Получаем порт из переменной окружения Render.com
-    # Если не установлено, используем 10000 по умолчанию, Render обычно предоставляет 10000
-    PORT = int(os.environ.get("PORT", 10000)) # <--- Убедитесь, что эта строка ТОЧНО здесь
+    PORT = int(os.environ.get("PORT", 10000)) # <--- Эта строка должна быть здесь
 
-    application = Application.builder().token(BOT_TOKEN).build() # <-- Используем переменную BOT_TOKEN
+    application = Application.builder().token(BOT_TOKEN).build()
 
-    # Добавляем обработчики команд
     application.add_handler(CommandHandler("start", start))
     application.add_handler(CommandHandler("help", help_command))
     application.add_handler(CommandHandler("find", find_notes_command))
     application.add_handler(CommandHandler("all_notes", all_notes_command))
-
-    # Добавляем обработчик для текстовых сообщений (без команд)
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
 
-    # Настройка JobQueue для периодической проверки напоминаний
     job_queue = application.job_queue
-    # Запускаем проверку каждые 10 минут (600 секунд)
-    job_queue.run_repeating(check_reminders, interval=600, first=0) 
+    job_queue.run_repeating(check_reminders, interval=600, first=0)
 
-    async def run_combined_app():
-        # Запускаем Flask-сервер в отдельном потоке, чтобы он не блокировал основной цикл asyncio
-        flask_server_task = asyncio.to_thread(web_app.run, host='0.0.0.0', port=PORT, debug=False)
+    # --- ИЗМЕНЕННЫЙ БЛОК: Запуск Flask-сервера в отдельном потоке ---
+    def run_flask_server():
+        print(f"Starting Flask web server on port {PORT}...")
+        web_app.run(host='0.0.0.0', port=PORT, debug=False, use_reloader=False) # use_reloader=False важен для продакшена
 
-        # Запускаем Telegram-бота. run_polling() сама по себе уже асинхронна
-        # и будет работать в текущем цикле событий.
-        # drop_pending_updates=True гарантирует, что бот не будет обрабатывать
-        # сообщения, отправленные, пока он был в офлайне.
-        telegram_bot_task = application.run_polling(drop_pending_updates=True)
+    # Запускаем Flask-сервер в отдельном потоке
+    flask_thread = threading.Thread(target=run_flask_server)
+    flask_thread.start()
+    # --- КОНЕЦ ИЗМЕНЕННОГО БЛОКА ---
 
-        # Ждем завершения обеих задач. Фактически они будут работать постоянно.
-        await asyncio.gather(telegram_bot_task, flask_server_task)
-
-    # Запускаем асинхронную функцию
-    print(f"Starting Telegram bot and Flask web server on port {PORT}...")
-    asyncio.run(run_combined_app())
+    # Запускаем Telegram-бота. application.run_polling() сама по себе запустит
+    # основной цикл событий и будет управлять им.
+    print("Starting Telegram bot...")
+    application.run_polling(drop_pending_updates=True)
 
 if __name__ == '__main__':
     main()
