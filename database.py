@@ -84,14 +84,18 @@ def find_notes_by_user_and_hashtag(user_id: int, hashtag: str):
 
 def get_upcoming_reminders():
     """
-    Retrieves reminders that are set to trigger within the next 24 hours from the current time.
+    Retrieves reminders where the notification time (reminder_date minus 1 day)
+    is set to trigger within the next 24 hours from the current time.
     """
     session = Session()
     now = datetime.datetime.now()
+    
     reminders = session.query(Note).filter(
         Note.reminder_date.isnot(None),
-        Note.reminder_date > now, # Reminder must be in the future
-        Note.reminder_date <= now + datetime.timedelta(days=1) # Reminder must be within the next 24 hours
+        # Условие 1: Дата уведомления (дата события минус 1 день) должна быть в будущем
+        (Note.reminder_date - datetime.timedelta(days=1)) > now,
+        # Условие 2: Дата уведомления должна быть в пределах следующих 24 часов от текущего момента
+        (Note.reminder_date - datetime.timedelta(days=1)) <= now + datetime.timedelta(days=1)
     ).all()
     session.close()
     return reminders
