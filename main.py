@@ -121,7 +121,7 @@ async def find_notes_command(update: Update, context: ContextTypes.DEFAULT_TYPE)
             if note.hashtags:
                 response += f" (# {note.hashtags.replace(' ', ', #')})"
             if note.reminder_date:
-                response += f" (Напоминание: {note.reminder_date.strftime('%Y-%m-%d %H:%M')})"
+                response += f" (Напоминание: {note.reminder_date.strftime('%H:%M %d-%m-%Y')})"
             response += "\n"
     else:
         response = f"Заметок по хэштегу '{hashtag}' не найдено."
@@ -140,7 +140,7 @@ async def all_notes_command(update: Update, context: ContextTypes.DEFAULT_TYPE) 
             if note.hashtags:
                 response += f" (# {note.hashtags.replace(' ', ', #')})"
             if note.reminder_date:
-                response += f" (Напоминание: {note.reminder_date.strftime('%Y-%m-%d %H:%M')})"
+                response += f" (Напоминание: {note.reminder_date.strftime('%H:%M %d-%m-%Y')})"
             response += "\n"
         await update.message.reply_text(response)
     else:
@@ -169,7 +169,7 @@ async def check_reminders(context: ContextTypes.DEFAULT_TYPE) -> None:
             # Send the reminder message to the specified channel
             await context.bot.send_message(
                 chat_id=channel_id, # Reminders are sent to the channel
-                text=f"🔔 Напоминание: '{note.text}' назначено на {note.reminder_date.strftime('%Y-%m-%d %H:%M')}."
+                text=f"🔔 Напоминание: '{note.text}' назначено на {note.reminder_date.strftime('%H:%M %d-%m-%Y')}."
             )
             logger.info(f"Отправлено напоминание в канал {channel_id} для заметки {note.id}")
         except Exception as e:
