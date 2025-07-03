@@ -51,6 +51,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     """Обрабатывает входящие текстовые сообщения для сохранения в качестве заметок, извлекая хэштеги и напоминания."""
     user_id = update.effective_user.id
     message_text = update.message.text
+    logger.info(f"Получено сообщение от пользователя {user_id}: '{message_text}'")
 
     # Инициализируем переменные
     hashtags_str = None
@@ -63,26 +64,34 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     # Добавил \s* перед @, чтобы учесть возможные пробелы/переносы строк.
     full_datetime_pattern = r'\s*@(\d{2}-\d{2}-\d{4})\s+(\d{2}:\d{2})'
     full_datetime_match = re.search(full_datetime_pattern, message_text, re.DOTALL)
+    logger.info(f"Результат поиска полного формата даты/времени: {full_datetime_match}")
 
     if full_datetime_match:
         date_str = full_datetime_match.group(1)
         time_str = full_datetime_match.group(2)
+        logger.info(f"Найдены дата: '{date_str}', время: '{time_str}'")
         try:
             reminder_date = datetime.strptime(f"{date_str} {time_str}", '%d-%m-%Y %H:%M')
             reminder_string_found = full_datetime_match.group(0) # Сохраняем всю найденную строку
-        except ValueError:
+            logger.info(f"Напоминание успешно распарсено: {reminder_date}, найдена строка: '{reminder_string_found}'")
+        except ValueError as e:
+            logger.error(f"Ошибка парсинга полного формата даты/времени: {e}")
             await update.message.reply_text("Неверный формат даты/времени для напоминания. Используйте @ДД-ММ-ГГГГ ЧЧ:ММ.")
             return
     else:
         # Если полный формат не найден, ищем формат только с датой @ДД-ММ-ГГГГ
         date_only_pattern = r'\s*@(\d{2}-\d{2}-\d{4})'
         date_only_match = re.search(date_only_pattern, message_text, re.DOTALL)
+        logger.info(f"Результат поиска только даты: {date_only_match}")
         if date_only_match:
             date_str = date_only_match.group(1)
+            logger.info(f"Найдена только дата: '{date_str}'")
             try:
                 reminder_date = datetime.strptime(date_str, '%d-%m-%Y').replace(hour=9, minute=0)
                 reminder_string_found = date_only_match.group(0) # Сохраняем всю найденную строку
-            except ValueError:
+                logger.info(f"Напоминание (только дата) успешно распарсено: {reminder_date}, найдена строка: '{reminder_string_found}'")
+            except ValueError as e:
+                logger.error(f"Ошибка парсинга только даты: {e}")
                 await update.message.reply_text("Неверный формат даты для напоминания. Используйте @ДД-ММ-ГГГГ или @ДД-ММ-ГГГГ ЧЧ:ММ.")
                 return
 
@@ -93,13 +102,16 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         # Удаляем всю найденную строку напоминания, включая @ и окружающие пробелы.
         # Используем re.sub, чтобы гарантировать удаление всех вхождений, если их несколько (хотя и маловероятно)
         cleaned_text = re.sub(re.escape(reminder_string_found), '', cleaned_text).strip()
+        logger.info(f"Текст после удаления напоминания: '{cleaned_text}'")
     
     # Извлекаем хэштеги из оставшегося текста
     hashtags = re.findall(r'#(\w+)', cleaned_text)
     hashtags_str = ' '.join(hashtags).lower() if hashtags else None
+    logger.info(f"Найденные хэштеги: {hashtags_str}")
 
     # Удаляем хэштеги из текста, чтобы получить чистый текст заметки
     note_text = re.sub(r'#\w+', '', cleaned_text).strip()
+    logger.info(f"Финальный текст заметки: '{note_text}'")
 
     if not note_text:
         await update.message.reply_text("Пожалуйста, введите текст заметки.")
@@ -225,7 +237,7 @@ def main() -> None:
     # Настраиваем JobQueue для повторяющихся задач (например, проверки напоминаний)
     job_queue = application.job_queue
     # Проверяем каждые 300 секунд (5 минут)
-    job_queue.run_repeating(check_reminders, interval=10, first=0) 
+    job_queue.run_repeating(check_reminders, interval=900, first=0) 
 
     # Функция для запуска Flask-веб-сервера в отдельном потоке
     def run_flask_server():
