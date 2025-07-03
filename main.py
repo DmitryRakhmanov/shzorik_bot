@@ -202,6 +202,10 @@ def main() -> None:
     if not BOT_TOKEN:
         raise Exception("TELEGRAM_BOT_TOKEN environment variable is not set! Please set it.")
 
+    # Получаем порт из переменной окружения Render.com
+    # Если не установлено, используем 10000 по умолчанию, Render обычно предоставляет 10000
+    PORT = int(os.environ.get("PORT", 10000)) # <--- Убедитесь, что эта строка ТОЧНО здесь
+
     application = Application.builder().token(BOT_TOKEN).build() # <-- Используем переменную BOT_TOKEN
 
     # Добавляем обработчики команд
