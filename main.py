@@ -3,8 +3,9 @@ from telegram import Update
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes, JobQueue
 import re
 from datetime import datetime, timedelta
-from database import add_note, find_notes_by_user_and_hashtag, get_upcoming_reminders, get_all_notes_for_user
-import asyncio # Although not directly used for async cleanup, it's a common import
+# Import the new update_note_reminder_date function
+from database import add_note, find_notes_by_user_and_hashtag, get_upcoming_reminders, get_all_notes_for_user, update_note_reminder_date
+import asyncio 
 import os
 from flask import Flask, request
 import threading
@@ -34,7 +35,8 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         f"Привет, {user.mention_html()}! Пока что я бот для заметок. "
         "Чтобы сохранить заметку, просто отправь мне текст. "
         "Для добавления хэштегов используй #хештег. "
-        "Для напоминания используй формат 'текст заметки #тег #другой_тег @2025-12-31 10:00'.\n"
+        "Для напоминания используй формат 'текст заметки #тег #другой_тег @ДД-ММ-ГГГГ ЧЧ:ММ'.\n" # Updated format in help text
+        "Напоминания приходят в канал, за 24 часа до события.\n"
         "Команды:\n"
         "/find #хештег - найти заметки по хештегу\n"
         "/all_notes - показать все твои заметки\n"
@@ -54,17 +56,18 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     hashtags = re.findall(r'#(\w+)', message_text)
     hashtags_str = ' '.join(hashtags).lower() if hashtags else None
 
-    # Extract reminder date and time
-    reminder_match = re.search(r'@(\d{2}:\d{2})\s+(\d{2}-\d{2}-\d{4})', message_text)
+    # Extract reminder date and time (ДД-ММ-ГГГГ ЧЧ:ММ)
+    # The regex now matches the exact format "ДД-ММ-ГГГГ ЧЧ:ММ"
+    reminder_match = re.search(r'@(\d{2}-\d{2}-\d{4})\s+(\d{2}:\d{2})', message_text)
     reminder_date = None
     if reminder_match:
-        time_str = reminder_match.group(1)
-        date_str = reminder_match.group(2)
+        date_str = reminder_match.group(1)
+        time_str = reminder_match.group(2)
         try:
             full_datetime_str = f"{date_str} {time_str}"
             reminder_date = datetime.strptime(full_datetime_str, '%d-%m-%Y %H:%M')
         except ValueError:
-            await update.message.reply_text("Неверный формат даты/времени для напоминания. Используйте @ЧЧ:ММ ДД-ММ-ГГГГ.")
+            await update.message.reply_text("Неверный формат даты/времени для напоминания. Используйте @ДД-ММ-ГГГГ ЧЧ:ММ.")
             return
     else:
         # Check for date-only reminder (defaults to 9 AM)
@@ -74,8 +77,9 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
             try:
                 reminder_date = datetime.strptime(date_str, '%d-%m-%Y').replace(hour=9, minute=0)
             except ValueError:
-                await update.message.reply_text("Неверный формат даты для напоминания. Используйте @ДД-ММ-ГГГГ или @ЧЧ:ММ ДД-ММ-ГГГГ.")
+                await update.message.reply_text("Неверный формат даты для напоминания. Используйте @ДД-ММ-ГГГГ или @ДД-ММ-ГГГГ ЧЧ:ММ.")
                 return
+
 
     # Clean the note text by removing hashtags and reminder parts
     note_text = re.sub(r'#\w+', '', message_text).strip()
@@ -94,7 +98,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     if hashtags_str:
         response_text += f"\nХэштеги: {hashtags_str.replace(' ', ', #')}"
     if reminder_date:
-        response_text += f"\nНапоминание установлено на: {reminder_date.strftime('%H:%M %d-%m-%Y')}"
+        response_text += f"\nНапоминание установлено на: {reminder_date.strftime('%H:%M %d-%m-%Y')}" # User's preferred format
 
     await update.message.reply_text(response_text)
 
@@ -121,7 +125,7 @@ async def find_notes_command(update: Update, context: ContextTypes.DEFAULT_TYPE)
             if note.hashtags:
                 response += f" (# {note.hashtags.replace(' ', ', #')})"
             if note.reminder_date:
-                response += f" (Напоминание: {note.reminder_date.strftime('%H:%M %d-%m-%Y')})"
+                response += f" (Напоминание: {note.reminder_date.strftime('%H:%M %d-%m-%Y')})" # User's preferred format
             response += "\n"
     else:
         response = f"Заметок по хэштегу '{hashtag}' не найдено."
@@ -140,7 +144,7 @@ async def all_notes_command(update: Update, context: ContextTypes.DEFAULT_TYPE) 
             if note.hashtags:
                 response += f" (# {note.hashtags.replace(' ', ', #')})"
             if note.reminder_date:
-                response += f" (Напоминание: {note.reminder_date.strftime('%H:%M %d-%m-%Y')})"
+                response += f" (Напоминание: {note.reminder_date.strftime('%H:%M %d-%m-%Y')})" # User's preferred format
             response += "\n"
         await update.message.reply_text(response)
     else:
@@ -151,27 +155,31 @@ async def all_notes_command(update: Update, context: ContextTypes.DEFAULT_TYPE) 
 
 async def check_reminders(context: ContextTypes.DEFAULT_TYPE) -> None:
     """
-    Checks the database for upcoming reminders (next 24 hours)
+    Checks the database for upcoming reminders (next 24 hours from notification time)
     and sends them to the specified Telegram channel.
     """
     logger.info("Проверка напоминаний...")
     reminders = get_upcoming_reminders()
     
     # Get the channel ID from environment variables.
-    # This ID must be set on Render.com for reminders to be sent.
     channel_id = os.environ.get("TELEGRAM_CHANNEL_ID")
     if not channel_id:
         logger.error("TELEGRAM_CHANNEL_ID is not set in environment variables. Reminders will not be sent to the channel.")
-        return # Exit if channel ID is not set
+        return
 
     for note in reminders:
         try:
-            # Send the reminder message to the specified channel
             await context.bot.send_message(
-                chat_id=channel_id, # Reminders are sent to the channel
+                chat_id=channel_id,
+                # Use user's preferred format for the reminder message
                 text=f"🔔 Напоминание: '{note.text}' назначено на {note.reminder_date.strftime('%H:%M %d-%m-%Y')}."
             )
             logger.info(f"Отправлено напоминание в канал {channel_id} для заметки {note.id}")
+            
+            # Clear the reminder_date in the database so it's not sent again
+            update_note_reminder_date(note.id)
+            logger.info(f"Дата напоминания для заметки {note.id} обнулена.")
+
         except Exception as e:
             logger.error(f"Не удалось отправить напоминание в канал {channel_id}: {e}")
 
@@ -203,23 +211,19 @@ def main() -> None:
 
     # Set up JobQueue for recurring tasks (like checking reminders)
     job_queue = application.job_queue
-    job_queue.run_repeating(check_reminders, interval=60, first=0) # Check every 600 seconds (10 minutes)
+    job_queue.run_repeating(check_reminders, interval=300, first=0) # Check every 300 seconds (5 minutes)
 
     # Function to run the Flask web server in a separate thread
     def run_flask_server():
         print(f"Starting Flask web server on port {PORT}...")
-        # debug=False and use_reloader=False are important for production environments
         web_app.run(host='0.0.0.0', port=PORT, debug=False, use_reloader=False)
 
     # Start the Flask server in a daemon thread so it doesn't block the main bot thread
     flask_thread = threading.Thread(target=run_flask_server)
-    flask_thread.daemon = True # Allows the main program to exit even if this thread is still running
+    flask_thread.daemon = True 
     flask_thread.start()
 
     print("Starting Telegram bot...")
-    # Start the bot using long polling.
-    # drop_pending_updates=True ensures that any messages received while the bot was offline
-    # or during a previous conflicting session are ignored upon startup.
     application.run_polling(drop_pending_updates=True)
 
 if __name__ == '__main__':

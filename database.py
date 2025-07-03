@@ -11,13 +11,6 @@ if not DATABASE_URL:
     raise Exception("DATABASE_URL environment variable is not set!")
 
 # Create the database engine with connection pooling settings.
-# These settings help prevent unexpected disconnections (e.g., "SSL connection has been closed unexpectedly").
-# pool_size: Maximum number of connections to keep in the pool.
-# max_overflow: Additional connections that can be opened if the pool is busy.
-# pool_recycle: Time in seconds after which connections are recycled (re-established).
-#               Set this lower than your database's idle timeout (e.g., 300 seconds for 5 minutes).
-# pool_pre_ping: Sends a lightweight query to the DB before using a connection to ensure it's still active.
-# echo=False: Disables verbose SQL query logging to the console (set to True for debugging if needed).
 engine = create_engine(
     DATABASE_URL,
     pool_size=10,
@@ -46,7 +39,6 @@ class Note(Base):
         return f"<Note(id={self.id}, user_id={self.user_id}, text='{self.text[:20]}...')>"
 
 # Create tables in the database if they don't already exist.
-# This should ideally be called once during application initialization or deployment.
 Base.metadata.create_all(engine)
 
 # Create a session factory bound to our configured engine.
@@ -62,13 +54,31 @@ def add_note(user_id: int, text: str, hashtags: str = None, reminder_date: datet
         new_note = Note(user_id=user_id, text=text, hashtags=hashtags, reminder_date=reminder_date)
         session.add(new_note)
         session.commit()
-        # session.refresh(new_note) # Uncomment if you need generated ID immediately after commit
         return new_note
     except Exception as e:
         session.rollback() # Rollback changes on error
         raise e
     finally:
         session.close() # Always close the session to release the connection
+
+def update_note_reminder_date(note_id: int):
+    """
+    Sets the reminder_date of a specific note to None, effectively marking it as processed
+    so it's not sent again.
+    """
+    session = Session()
+    try:
+        note = session.query(Note).filter(Note.id == note_id).first()
+        if note:
+            note.reminder_date = None  # Clear the reminder date
+            session.commit()
+            return True
+        return False
+    except Exception as e:
+        session.rollback()
+        raise e
+    finally:
+        session.close()
 
 def find_notes_by_user_and_hashtag(user_id: int, hashtag: str):
     """
@@ -92,9 +102,9 @@ def get_upcoming_reminders():
     
     reminders = session.query(Note).filter(
         Note.reminder_date.isnot(None),
-        # Условие 1: Дата уведомления (дата события минус 1 день) должна быть в будущем
+        # Condition 1: The notification time (event date minus 1 day) must be in the future
         (Note.reminder_date - datetime.timedelta(days=1)) > now,
-        # Условие 2: Дата уведомления должна быть в пределах следующих 24 часов от текущего момента
+        # Condition 2: The notification time must be within the next 24 hours from now
         (Note.reminder_date - datetime.timedelta(days=1)) <= now + datetime.timedelta(days=1)
     ).all()
     session.close()
