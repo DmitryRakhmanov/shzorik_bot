@@ -203,7 +203,7 @@ def main() -> None:
 
     # Set up JobQueue for recurring tasks (like checking reminders)
     job_queue = application.job_queue
-    job_queue.run_repeating(check_reminders, interval=600, first=0) # Check every 600 seconds (10 minutes)
+    job_queue.run_repeating(check_reminders, interval=300, first=0) # Check every 600 seconds (10 minutes)
 
     # Function to run the Flask web server in a separate thread
     def run_flask_server():
