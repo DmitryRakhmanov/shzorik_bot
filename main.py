@@ -1,10 +1,9 @@
-# main.py
-
 import logging
 from telegram import Update
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes, JobQueue
 import re
 from datetime import datetime, timedelta
+# Импортируем все необходимые функции из database.py
 from database import add_note, find_notes_by_user_and_hashtag, get_upcoming_reminders, get_all_notes_for_user, update_note_reminder_date
 import asyncio 
 import os
@@ -53,58 +52,66 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     user_id = update.effective_user.id
     message_text = update.message.text
 
-    # Извлекаем хэштеги
-    hashtags = re.findall(r'#(\w+)', message_text)
-    hashtags_str = ' '.join(hashtags).lower() if hashtags else None
+    # Инициализируем переменные
+    hashtags_str = None
+    reminder_date = None
+    reminder_string_found = None # Будет хранить найденную подстроку напоминания (например, "@01-01-2025 10:00")
 
-    # Извлекаем дату и время напоминания (ДД-ММ-ГГГГ ЧЧ:ММ)
+    # --- Извлечение напоминания (делаем это первым, чтобы избежать конфликтов) ---
+    # Поиск полного формата @ДД-ММ-ГГГГ ЧЧ:ММ
     # Используем re.DOTALL, чтобы '.' соответствовал также переносам строк.
     # Добавил \s* перед @, чтобы учесть возможные пробелы/переносы строк.
-    reminder_match = re.search(r'\s*@(\d{2}-\d{2}-\d{4})\s+(\d{2}:\d{2})', message_text, re.DOTALL)
-    reminder_date = None
-    if reminder_match:
-        date_str = reminder_match.group(1) 
-        time_str = reminder_match.group(2)
+    full_datetime_pattern = r'\s*@(\d{2}-\d{2}-\d{4})\s+(\d{2}:\d{2})'
+    full_datetime_match = re.search(full_datetime_pattern, message_text, re.DOTALL)
+
+    if full_datetime_match:
+        date_str = full_datetime_match.group(1)
+        time_str = full_datetime_match.group(2)
         try:
-            full_datetime_str = f"{date_str} {time_str}"
-            reminder_date = datetime.strptime(full_datetime_str, '%d-%m-%Y %H:%M')
+            reminder_date = datetime.strptime(f"{date_str} {time_str}", '%d-%m-%Y %H:%M')
+            reminder_string_found = full_datetime_match.group(0) # Сохраняем всю найденную строку
         except ValueError:
             await update.message.reply_text("Неверный формат даты/времени для напоминания. Используйте @ДД-ММ-ГГГГ ЧЧ:ММ.")
             return
     else:
-        # Проверяем напоминания только по дате (по умолчанию в 9 утра)
-        date_only_match = re.search(r'\s*@(\d{2}-\d{2}-\d{4})', message_text, re.DOTALL)
+        # Если полный формат не найден, ищем формат только с датой @ДД-ММ-ГГГГ
+        date_only_pattern = r'\s*@(\d{2}-\d{2}-\d{4})'
+        date_only_match = re.search(date_only_pattern, message_text, re.DOTALL)
         if date_only_match:
             date_str = date_only_match.group(1)
             try:
                 reminder_date = datetime.strptime(date_str, '%d-%m-%Y').replace(hour=9, minute=0)
+                reminder_string_found = date_only_match.group(0) # Сохраняем всю найденную строку
             except ValueError:
                 await update.message.reply_text("Неверный формат даты для напоминания. Используйте @ДД-ММ-ГГГГ или @ДД-ММ-ГГГГ ЧЧ:ММ.")
                 return
 
-    # Очищаем текст заметки, удаляя хэштеги и части напоминания
-    # Важно: сначала удаляем часть с напоминанием, затем хэштеги.
+    # --- Очистка текста заметки и извлечение хэштегов ---
+    # Сначала удаляем часть с напоминанием, если она была найдена
     cleaned_text = message_text
-    if reminder_match:
+    if reminder_string_found:
         # Удаляем всю найденную строку напоминания, включая @ и окружающие пробелы.
-        cleaned_text = cleaned_text.replace(reminder_match.group(0), '').strip()
-    elif date_only_match:
-        cleaned_text = cleaned_text.replace(date_only_match.group(0), '').strip()
+        # Используем re.sub, чтобы гарантировать удаление всех вхождений, если их несколько (хотя и маловероятно)
+        cleaned_text = re.sub(re.escape(reminder_string_found), '', cleaned_text).strip()
     
-    # Удаляем хэштеги из оставшегося текста
+    # Извлекаем хэштеги из оставшегося текста
+    hashtags = re.findall(r'#(\w+)', cleaned_text)
+    hashtags_str = ' '.join(hashtags).lower() if hashtags else None
+
+    # Удаляем хэштеги из текста, чтобы получить чистый текст заметки
     note_text = re.sub(r'#\w+', '', cleaned_text).strip()
 
     if not note_text:
         await update.message.reply_text("Пожалуйста, введите текст заметки.")
         return
 
-    # Добавляем заметку в базу данных
+    # --- Сохранение заметки и ответ ---
     add_note(user_id, note_text, hashtags_str, reminder_date)
     response_text = "Заметка сохранена!"
     if hashtags_str:
         response_text += f"\nХэштеги: {hashtags_str.replace(' ', ', #')}"
     if reminder_date:
-        response_text += f"\nНапоминание установлено на: {reminder_date.strftime('%H:%M %d-%m-%Y')}" # Используем формат ЧЧ:ММ ДД-ММ-ГГГГ
+        response_text += f"\nНапоминание установлено на: {reminder_date.strftime('%H:%M %d-%m-%Y')}"
 
     await update.message.reply_text(response_text)
 
@@ -218,7 +225,7 @@ def main() -> None:
     # Настраиваем JobQueue для повторяющихся задач (например, проверки напоминаний)
     job_queue = application.job_queue
     # Проверяем каждые 300 секунд (5 минут)
-    job_queue.run_repeating(check_reminders, interval=20, first=0) 
+    job_queue.run_repeating(check_reminders, interval=300, first=0) 
 
     # Функция для запуска Flask-веб-сервера в отдельном потоке
     def run_flask_server():
