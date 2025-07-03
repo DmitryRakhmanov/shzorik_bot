@@ -5,6 +5,14 @@ __pycache__/
 *.pyc
 *.pyd
 *.pyo
+.Python
+env/
+venv/
+pip-log.txt
+pip-delete-this-directory.txt
+.project
+.settings
+.vscode
 
 # C extensions
 *.so
@@ -32,6 +40,9 @@ share/python-wheels/
 .installed.cfg
 *.egg
 MANIFEST
+
+# Environment variables
+.env
 
 # PyInstaller
 #  Usually these files are written by a python script from a template
