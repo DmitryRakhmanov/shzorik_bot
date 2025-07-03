@@ -220,7 +220,7 @@ def main() -> None:
     # Вернемся к самому надежному способу без усложнений:
     # application.run_polling сам позаботится о запуске цикла и очистке.
     # Если Conflict persist, то это проблема с жизненным циклом процесса на Render.
-    application.run_polling(drop_pending_updates=True, clean=True)
+    application.run_polling(drop_pending_updates=True)
 
 if __name__ == '__main__':
     main()
