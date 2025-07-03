@@ -222,20 +222,22 @@ def main() -> None:
     # Запускаем проверку каждые 10 минут (600 секунд)
     job_queue.run_repeating(check_reminders, interval=600, first=0) 
 
-    async def run_both_servers():
-        # Запускаем Telegram-бота в режиме polling
-        polling_task = asyncio.create_task(application.run_polling(drop_pending_updates=True))
+    async def run_combined_app():
+        # Запускаем Flask-сервер в отдельном потоке, чтобы он не блокировал основной цикл asyncio
+        flask_server_task = asyncio.to_thread(web_app.run, host='0.0.0.0', port=PORT, debug=False)
 
-        # Запускаем Flask-сервер. host='0.0.0.0' делает его доступным извне контейнера.
-        # debug=False для продакшена.
-        flask_task = asyncio.create_task(asyncio.to_thread(web_app.run, host='0.0.0.0', port=PORT, debug=False))
+        # Запускаем Telegram-бота. run_polling() сама по себе уже асинхронна
+        # и будет работать в текущем цикле событий.
+        # drop_pending_updates=True гарантирует, что бот не будет обрабатывать
+        # сообщения, отправленные, пока он был в офлайне.
+        telegram_bot_task = application.run_polling(drop_pending_updates=True)
 
-        # Ждем, пока обе задачи завершатся (на практике, они будут работать постоянно)
-        await asyncio.gather(polling_task, flask_task)
+        # Ждем завершения обеих задач. Фактически они будут работать постоянно.
+        await asyncio.gather(telegram_bot_task, flask_server_task)
 
     # Запускаем асинхронную функцию
     print(f"Starting Telegram bot and Flask web server on port {PORT}...")
-    asyncio.run(run_both_servers())
+    asyncio.run(run_combined_app())
 
 if __name__ == '__main__':
     main()
