@@ -8,6 +8,7 @@ from database import add_note, find_notes_by_user_and_hashtag, get_upcoming_remi
 import asyncio
 import os
 from flask import Flask, request
+import threading
 
 # Создаем Flask-приложение
 web_app = Flask(__name__)
