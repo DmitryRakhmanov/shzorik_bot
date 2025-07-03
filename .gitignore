@@ -223,3 +223,22 @@ cython_debug/
 marimo/_static/
 marimo/_lsp/
 __marimo__/
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+env/
+venv/
+pip-log.txt
+pip-delete-this-directory.txt
+.project
+.settings
+.vscode
+# Databases
+*.db
+*.sqlite3
+# Environment variables
+.env
