@@ -4,28 +4,31 @@ from telegram.ext import Application, CommandHandler, MessageHandler, filters, C
 import re
 from datetime import datetime, timedelta
 from database import add_note, find_notes_by_user_and_hashtag, get_upcoming_reminders, get_all_notes_for_user
-import asyncio
+import asyncio # Although not directly used for async cleanup, it's a common import
 import os
 from flask import Flask, request
 import threading
 
-# Создаем Flask-приложение
+# Create a Flask app for health checks (required by Render.com)
 web_app = Flask(__name__)
 
-# Определяем маршрут /health, который Render будет "пинговать"
+# Define a health check route
 @web_app.route('/health')
 def health_check():
-    return 'OK', 200 # Просто возвращаем "OK" и статус 200 (успешно)
+    """Endpoint for Render.com to check if the service is running."""
+    return 'OK', 200 # Returns "OK" with a 200 status code
 
-# Настройка логирования, чтобы видеть, что происходит
+# Configure logging to see what's happening
 logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s', level=logging.INFO
 )
-logging.getLogger(__name__).setLevel(logging.INFO) # Можно установить DEBUG для более подробной информации
+logging.getLogger(__name__).setLevel(logging.INFO)
 logger = logging.getLogger(__name__)
 
-# --- Обработчики команд (без изменений) ---
+# --- Command Handlers ---
+
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Sends a welcome message and instructions on /start command."""
     user = update.effective_user
     await update.message.reply_html(
         f"Привет, {user.mention_html()}! Пока что я бот для заметок. "
@@ -39,15 +42,19 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     )
 
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Sends the help message (same as start)."""
     await start(update, context)
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Processes incoming text messages to save them as notes, extracting hashtags and reminders."""
     user_id = update.effective_user.id
     message_text = update.message.text
 
+    # Extract hashtags
     hashtags = re.findall(r'#(\w+)', message_text)
     hashtags_str = ' '.join(hashtags).lower() if hashtags else None
 
+    # Extract reminder date and time
     reminder_match = re.search(r'@(\d{2}:\d{2})\s+(\d{2}-\d{2}-\d{4})', message_text)
     reminder_date = None
     if reminder_match:
@@ -60,6 +67,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
             await update.message.reply_text("Неверный формат даты/времени для напоминания. Используйте @ЧЧ:ММ ДД-ММ-ГГГГ.")
             return
     else:
+        # Check for date-only reminder (defaults to 9 AM)
         date_only_match = re.search(r'@(\d{2}-\d{2}-\d{4})', message_text)
         if date_only_match:
             date_str = date_only_match.group(1)
@@ -69,6 +77,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
                 await update.message.reply_text("Неверный формат даты для напоминания. Используйте @ДД-ММ-ГГГГ или @ЧЧ:ММ ДД-ММ-ГГГГ.")
                 return
 
+    # Clean the note text by removing hashtags and reminder parts
     note_text = re.sub(r'#\w+', '', message_text).strip()
     if reminder_match:
         note_text = note_text.replace(reminder_match.group(0), '').strip()
@@ -79,6 +88,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         await update.message.reply_text("Пожалуйста, введите текст заметки.")
         return
 
+    # Add the note to the database
     add_note(user_id, note_text, hashtags_str, reminder_date)
     response_text = "Заметка сохранена!"
     if hashtags_str:
@@ -89,6 +99,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     await update.message.reply_text(response_text)
 
 async def find_notes_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Finds and displays notes based on a specified hashtag."""
     user_id = update.effective_user.id
     if not context.args:
         await update.message.reply_text("Пожалуйста, укажите хэштег для поиска. Пример: /find #важно")
@@ -98,8 +109,8 @@ async def find_notes_command(update: Update, context: ContextTypes.DEFAULT_TYPE)
     if not hashtag.startswith('#'):
         await update.message.reply_text("Хэштег должен начинаться с '#'. Пример: /find #важно")
         return
-
-    search_hashtag = hashtag[1:]
+    
+    search_hashtag = hashtag[1:] # Remove '#' for database search
 
     notes = find_notes_by_user_and_hashtag(user_id, search_hashtag)
 
@@ -118,6 +129,7 @@ async def find_notes_command(update: Update, context: ContextTypes.DEFAULT_TYPE)
     await update.message.reply_text(response)
 
 async def all_notes_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Displays all notes stored for the current user."""
     user_id = update.effective_user.id
     notes = get_all_notes_for_user(user_id)
 
@@ -134,92 +146,80 @@ async def all_notes_command(update: Update, context: ContextTypes.DEFAULT_TYPE) 
     else:
         await update.message.reply_text("У тебя пока нет заметок.")
 
-# --- Функция для проверки напоминаний ---
+
+# --- Reminder Checking Function ---
+
 async def check_reminders(context: ContextTypes.DEFAULT_TYPE) -> None:
+    """
+    Checks the database for upcoming reminders (next 24 hours)
+    and sends them to the specified Telegram channel.
+    """
     logger.info("Проверка напоминаний...")
     reminders = get_upcoming_reminders()
+    
+    # Get the channel ID from environment variables.
+    # This ID must be set on Render.com for reminders to be sent.
+    channel_id = os.environ.get("TELEGRAM_CHANNEL_ID")
+    if not channel_id:
+        logger.error("TELEGRAM_CHANNEL_ID is not set in environment variables. Reminders will not be sent to the channel.")
+        return # Exit if channel ID is not set
 
     for note in reminders:
         try:
+            # Send the reminder message to the specified channel
             await context.bot.send_message(
-                chat_id=note.user_id,
+                chat_id=channel_id, # Reminders are sent to the channel
                 text=f"🔔 Напоминание: '{note.text}' назначено на {note.reminder_date.strftime('%Y-%m-%d %H:%M')}."
             )
-            logger.info(f"Отправлено напоминание пользователю {note.user_id} для заметки {note.id}")
+            logger.info(f"Отправлено напоминание в канал {channel_id} для заметки {note.id}")
         except Exception as e:
-            logger.error(f"Не удалось отправить напоминание пользователю {note.user_id}: {e}")
+            logger.error(f"Не удалось отправить напоминание в канал {channel_id}: {e}")
+
 
 def main() -> None:
-    """Запускает бота и Flask-сервер."""
+    """
+    Main function to start the Telegram bot and Flask web server.
+    Ensures environment variables are set and configures bot handlers.
+    """
+    # Get Telegram bot token from environment variable
     BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
     if not BOT_TOKEN:
         raise Exception("TELEGRAM_BOT_TOKEN environment variable is not set! Please set it.")
 
+    # Get the port for Flask server from environment variable (default to 10000 for Render)
     PORT = int(os.environ.get("PORT", 10000))
 
+    # Build the Telegram bot Application
     application = Application.builder().token(BOT_TOKEN).build()
 
+    # Add command handlers
     application.add_handler(CommandHandler("start", start))
     application.add_handler(CommandHandler("help", help_command))
     application.add_handler(CommandHandler("find", find_notes_command))
     application.add_handler(CommandHandler("all_notes", all_notes_command))
+    
+    # Add a message handler for all text messages that are not commands
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
 
+    # Set up JobQueue for recurring tasks (like checking reminders)
     job_queue = application.job_queue
-    job_queue.run_repeating(check_reminders, interval=600, first=0)
+    job_queue.run_repeating(check_reminders, interval=600, first=0) # Check every 600 seconds (10 minutes)
 
+    # Function to run the Flask web server in a separate thread
     def run_flask_server():
         print(f"Starting Flask web server on port {PORT}...")
+        # debug=False and use_reloader=False are important for production environments
         web_app.run(host='0.0.0.0', port=PORT, debug=False, use_reloader=False)
 
+    # Start the Flask server in a daemon thread so it doesn't block the main bot thread
     flask_thread = threading.Thread(target=run_flask_server)
+    flask_thread.daemon = True # Allows the main program to exit even if this thread is still running
     flask_thread.start()
 
     print("Starting Telegram bot...")
-    # =========================================================================
-    # ВРЕМЕННЫЙ КОД ДЛЯ ОЧИСТКИ СОСТОЯНИЯ TELEGRAM API
-    # Этот блок должен быть удален ПОСЛЕ успешного развертывания
-    # и исчезновения ошибки Conflict.
-    # =========================================================================
-    async def one_time_cleanup():
-        # Получаем текущий цикл событий, если он уже запущен
-        loop = asyncio.get_event_loop()
-        if not loop.is_running():
-            # Если цикл не запущен, то мы не можем вызвать await
-            # В этом случае, возможно, вам придётся запустить его вручную
-            # или использовать application.run_polling(clean=True) без этого
-            logger.warning("Asyncio event loop is not running. Cannot perform webhook cleanup.")
-            return
-
-        try:
-            # Попытка удалить любой существующий вебхук.
-            # Это часто сбрасывает состояние polling на сервере Telegram.
-            await application.bot.delete_webhook()
-            logger.info("Successfully deleted any lingering webhooks.")
-        except Exception as e:
-            logger.error(f"Failed to delete webhook: {e}")
-
-        # Также, убедимся, что все ожидающие обновления удалены
-        # (это уже делает drop_pending_updates=True, но явная очистка никогда не помешает)
-        # await application.updater.start_polling(drop_pending_updates=True, clean=True)
-
-    # Запускаем эту одноразовую очистку асинхронно
-    # Это должно произойти перед тем, как application.run_polling() возьмет управление циклом
-    # Мы НЕ МОЖЕМ использовать asyncio.run() здесь, потому что application.run_polling()
-    # создаст свой собственный цикл.
-    # Лучший подход - использовать `clean=True` в `run_polling` как мы уже делали.
-    # Если `clean=True` не помогает, то, вероятно, проблема в Render, который запускает
-    # несколько процессов или не завершает старые.
-    #
-    # Давайте попробуем ещё одну вещь, если clean=True не сработало:
-    # Убедимся, что application.run_polling() - это последнее, что запускается в потоке.
-    # И попробуем сделать "Deploy Clear Cache & Deploy" несколько раз.
-    # Если это не поможет, то, возможно, стоит сделать "hard reset" на стороне Telegram
-    # (но это сложнее и требует другого подхода, обычно не нужно).
-
-    # Вернемся к самому надежному способу без усложнений:
-    # application.run_polling сам позаботится о запуске цикла и очистке.
-    # Если Conflict persist, то это проблема с жизненным циклом процесса на Render.
+    # Start the bot using long polling.
+    # drop_pending_updates=True ensures that any messages received while the bot was offline
+    # or during a previous conflicting session are ignored upon startup.
     application.run_polling(drop_pending_updates=True)
 
 if __name__ == '__main__':
