@@ -4,13 +4,14 @@ from sqlalchemy import create_engine, Column, Integer, String, Text, DateTime
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import sessionmaker
 
-# Get database URL from environment variable
-# This is crucial for Render.com deployments; do not hardcode your database URL.
+# Получаем URL базы данных из переменной окружения
+# Это критически важно для развертывания на Render.com; не вшивайте URL базы данных в код.
 DATABASE_URL = os.environ.get("DATABASE_URL")
 if not DATABASE_URL:
     raise Exception("DATABASE_URL environment variable is not set!")
 
-# Create the database engine with connection pooling settings.
+# Создаем движок базы данных с настройками пула соединений.
+# Эти настройки помогают предотвратить неожиданные разрывы соединений.
 engine = create_engine(
     DATABASE_URL,
     pool_size=10,
@@ -24,30 +25,29 @@ Base = declarative_base()
 
 class Note(Base):
     """
-    Represents a note in the database.
-    Includes fields for user ID, note text, hashtags, and a reminder date.
+    Представляет заметку в базе данных.
+    Включает поля для ID пользователя, текста заметки, хэштегов и даты напоминания.
     """
     __tablename__ = 'notes'
 
     id = Column(Integer, primary_key=True)
     user_id = Column(Integer, nullable=False)
     text = Column(Text, nullable=False)
-    hashtags = Column(String) # Stored as a space-separated string of hashtags
-    reminder_date = Column(DateTime)
+    hashtags = Column(String) # Хранится как строка хэштегов, разделенных пробелами
+    reminder_date = Column(DateTime) # Дата и время события, о котором нужно напомнить
 
     def __repr__(self):
         return f"<Note(id={self.id}, user_id={self.user_id}, text='{self.text[:20]}...')>"
 
-# Create tables in the database if they don't already exist.
+# Создаем таблицы в базе данных, если они еще не существуют.
 Base.metadata.create_all(engine)
 
-# Create a session factory bound to our configured engine.
+# Создаем фабрику сессий, привязанную к нашему настроенному движку.
 Session = sessionmaker(bind=engine)
 
 def add_note(user_id: int, text: str, hashtags: str = None, reminder_date: datetime.datetime = None):
     """
-    Adds a new note to the database.
-    Includes basic error handling and session management.
+    Добавляет новую заметку в базу данных.
     """
     session = Session()
     try:
@@ -56,21 +56,21 @@ def add_note(user_id: int, text: str, hashtags: str = None, reminder_date: datet
         session.commit()
         return new_note
     except Exception as e:
-        session.rollback() # Rollback changes on error
+        session.rollback() # Откатываем изменения в случае ошибки
         raise e
     finally:
-        session.close() # Always close the session to release the connection
+        session.close() # Всегда закрываем сессию, чтобы освободить соединение
 
 def update_note_reminder_date(note_id: int):
     """
-    Sets the reminder_date of a specific note to None, effectively marking it as processed
-    so it's not sent again.
+    Устанавливает reminder_date для конкретной заметки в None,
+    тем самым помечая ее как обработанную, чтобы напоминание не отправлялось повторно.
     """
     session = Session()
     try:
         note = session.query(Note).filter(Note.id == note_id).first()
         if note:
-            note.reminder_date = None  # Clear the reminder date
+            note.reminder_date = None  # Обнуляем дату напоминания
             session.commit()
             return True
         return False
@@ -82,29 +82,29 @@ def update_note_reminder_date(note_id: int):
 
 def find_notes_by_user_and_hashtag(user_id: int, hashtag: str):
     """
-    Finds notes for a specific user by a given hashtag (case-insensitive).
+    Находит заметки для конкретного пользователя по заданному хэштегу (без учета регистра).
     """
     session = Session()
     notes = session.query(Note).filter(
         Note.user_id == user_id,
-        Note.hashtags.ilike(f'%{hashtag}%') # Uses ILIKE for case-insensitive substring search
+        Note.hashtags.ilike(f'%{hashtag}%') # Используем ILIKE для поиска подстроки без учета регистра
     ).all()
     session.close()
     return notes
 
 def get_upcoming_reminders():
     """
-    Retrieves reminders where the notification time (reminder_date minus 1 day)
-    is set to trigger within the next 24 hours from the current time.
+    Извлекает напоминания, время уведомления по которым (дата события минус 1 день)
+    должно сработать в течение следующих 24 часов от текущего момента.
     """
     session = Session()
     now = datetime.datetime.now()
     
     reminders = session.query(Note).filter(
-        Note.reminder_date.isnot(None),
-        # Condition 1: The notification time (event date minus 1 day) must be in the future
+        Note.reminder_date.isnot(None), # Напоминание должно быть установлено
+        # Условие 1: Дата уведомления (дата события минус 1 день) должна быть в будущем
         (Note.reminder_date - datetime.timedelta(days=1)) > now,
-        # Condition 2: The notification time must be within the next 24 hours from now
+        # Условие 2: Дата уведомления должна быть в пределах следующих 24 часов от текущего момента
         (Note.reminder_date - datetime.timedelta(days=1)) <= now + datetime.timedelta(days=1)
     ).all()
     session.close()
@@ -112,7 +112,7 @@ def get_upcoming_reminders():
 
 def get_all_notes_for_user(user_id: int):
     """
-    Retrieves all notes stored for a specific user.
+    Извлекает все заметки, хранящиеся для конкретного пользователя.
     """
     session = Session()
     notes = session.query(Note).filter(Note.user_id == user_id).all()

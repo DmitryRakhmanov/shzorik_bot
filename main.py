@@ -225,7 +225,7 @@ def main() -> None:
     # Настраиваем JobQueue для повторяющихся задач (например, проверки напоминаний)
     job_queue = application.job_queue
     # Проверяем каждые 300 секунд (5 минут)
-    job_queue.run_repeating(check_reminders, interval=300, first=0) 
+    job_queue.run_repeating(check_reminders, interval=10, first=0) 
 
     # Функция для запуска Flask-веб-сервера в отдельном потоке
     def run_flask_server():
