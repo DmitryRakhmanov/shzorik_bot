@@ -7,6 +7,15 @@ from datetime import datetime, timedelta
 from database import add_note, find_notes_by_user_and_hashtag, get_upcoming_reminders, get_all_notes_for_user
 import asyncio
 import os
+from flask import Flask, request
+
+# Создаем Flask-приложение
+web_app = Flask(__name__)
+
+# Определяем маршрут /health, который Render будет "пинговать"
+@web_app.route('/health')
+def health_check():
+    return 'OK', 200 # Просто возвращаем "OK" и статус 200 (успешно)
 
 # Настройка логирования, чтобы видеть, что происходит
 logging.basicConfig(
@@ -209,8 +218,20 @@ def main() -> None:
     # Запускаем проверку каждые 10 минут (600 секунд)
     job_queue.run_repeating(check_reminders, interval=600, first=0) 
 
-    # Запускаем бота
-    application.run_polling(allowed_updates=Update.ALL_TYPES)
+    async def run_both_servers():
+        # Запускаем Telegram-бота в режиме polling
+        polling_task = asyncio.create_task(application.run_polling(drop_pending_updates=True))
+
+        # Запускаем Flask-сервер. host='0.0.0.0' делает его доступным извне контейнера.
+        # debug=False для продакшена.
+        flask_task = asyncio.create_task(asyncio.to_thread(web_app.run, host='0.0.0.0', port=PORT, debug=False))
+
+        # Ждем, пока обе задачи завершатся (на практике, они будут работать постоянно)
+        await asyncio.gather(polling_task, flask_task)
+
+    # Запускаем асинхронную функцию
+    print(f"Starting Telegram bot and Flask web server on port {PORT}...")
+    asyncio.run(run_both_servers())
 
 if __name__ == '__main__':
     main()
