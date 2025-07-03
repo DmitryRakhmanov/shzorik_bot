@@ -10,7 +10,7 @@ import os
 DATABASE_URL = os.environ.get("DATABASE_URL")
 if not DATABASE_URL:
     raise Exception("DATABASE_URL environment variable is not set!")
-
+engine = create_engine(DATABASE_URL, echo=False) # <-- Использует DATABASE_URL
 Base = declarative_base()
 
 class Note(Base):
