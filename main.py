@@ -168,6 +168,9 @@ async def find_notes_command(update: Update, context: ContextTypes.DEFAULT_TYPE)
     else:
         response = f"Заметок по хэштегу '{hashtag}' не найдено."
 
+    # Truncate long responses
+    if len(response) > 4000:
+         response = response[:3900] + "\n... (список обрезан, слишком много заметок)"
     await message_obj.reply_text(response)
 
 async def all_notes_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -195,8 +198,6 @@ async def all_notes_command(update: Update, context: ContextTypes.DEFAULT_TYPE) 
 async def upcoming_notes_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Handles the /upcoming_notes command to show reminders in the channel."""
     logger.info("Command /upcoming_notes invoked.")
-    # This command can be called from a private chat or a channel.
-    # If called from channel, reply to channel. If private, reply private.
     message_obj = update.effective_message 
     notes = get_upcoming_reminders() # This fetches all reminders, regardless of user_id
 
@@ -223,9 +224,14 @@ async def check_reminders(context: ContextTypes.DEFAULT_TYPE) -> None:
     logger.info("Checking for reminders...")
     reminders = get_upcoming_reminders() # Get all reminders from DB
     
-    channel_id = os.environ.get("TELEGRAM_CHANNEL_ID")
-    if not channel_id:
+    channel_id_str = os.environ.get("TELEGRAM_CHANNEL_ID")
+    if not channel_id_str:
         logger.error("TELEGRAM_CHANNEL_ID environment variable is not set. Reminders will not be sent to the channel.")
+        return
+    try:
+        channel_id = int(channel_id_str)
+    except ValueError:
+        logger.error(f"TELEGRAM_CHANNEL_ID '{channel_id_str}' is not a valid integer. Reminders will not be sent.")
         return
 
     for note in reminders:
@@ -243,7 +249,7 @@ async def check_reminders(context: ContextTypes.DEFAULT_TYPE) -> None:
                 logger.info(f"Reminder date for note {note.id} has been reset.")
 
         except Exception as e:
-            logger.error(f"Failed to send reminder to channel {channel_id}: {e}")
+            logger.error(f"Failed to send reminder to channel {channel_id} for note {note.id}: {e}")
 
 # --- Main Bot Function ---
 
@@ -260,10 +266,12 @@ def main() -> None:
         raise Exception("WEBHOOK_URL environment variable is not set! Please set it to your Render.com public URL + /telegram")
     
     WEBHOOK_SECRET_TOKEN = os.environ.get("WEBHOOK_SECRET_TOKEN")
-    if not WEBHOOK_SECRET_TOKEN:
-        logger.warning("WEBHOOK_SECRET_TOKEN environment variable is not set. It is highly recommended for webhook security.")
-        # Fallback to a default if not set, but strongly recommend setting it in production
-        WEBHOOK_SECRET_TOKEN = "e6f1a4w6857e8f1f3a9ca432af45c7d1" 
+    # For initial debugging, it's often easier to disable secret_token check
+    # if you're not setting it via BotFather API (which BotFather UI doesn't allow).
+    # If you remove it here, remember to re-enable and configure properly for production.
+    # if not WEBHOOK_SECRET_TOKEN:
+    #     logger.warning("WEBHOOK_SECRET_TOKEN environment variable is not set. It is highly recommended for webhook security.")
+    #     WEBHOOK_SECRET_TOKEN = "your_strong_secret_token_here_change_me" # Fallback, but set a real one!
 
     # Initialize the database (creates tables if they don't exist)
     initialize_db() 
@@ -293,15 +301,20 @@ def main() -> None:
     logger.info(f"Starting webhook server on port {PORT} with URL path /telegram")
     logger.info(f"Setting webhook URL to: {WEBHOOK_URL}")
 
-    application.run_webhook(
-        listen="0.0.0.0", # Listen on all available network interfaces
-        port=PORT,
-        url_path="telegram", # The specific path for the webhook (e.g., https://your-service.onrender.com/telegram)
-        webhook_url=WEBHOOK_URL,
-        secret_token=WEBHOOK_SECRET_TOKEN, # Secret token for webhook security
-        # Optionally, you can add health check path if you want a separate one
-        # health_check_path="/_health" 
-    )
+    webhook_params = {
+        "listen": "0.0.0.0", # Listen on all available network interfaces
+        "port": PORT,
+        "url_path": "telegram", # The specific path for the webhook (e.g., https://your-service.onrender.com/telegram)
+        "webhook_url": WEBHOOK_URL,
+    }
+
+    # Only add secret_token if it's explicitly set (better for production)
+    if WEBHOOK_SECRET_TOKEN:
+        webhook_params["secret_token"] = WEBHOOK_SECRET_TOKEN
+    else:
+        logger.warning("WEBHOOK_SECRET_TOKEN is not set. Webhook will run without secret token validation.")
+
+    application.run_webhook(**webhook_params)
     logger.info("Webhook server started successfully.")
 
 if __name__ == '__main__':
