@@ -28,7 +28,8 @@ logger = logging.getLogger(__name__)
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     user = update.effective_user
-    await update.message.reply_html(
+    # Используем update.effective_message.reply_html для ответа в тот же чат (личный или канал)
+    await update.effective_message.reply_html(
         f"Привет, {user.mention_html()}! Я бот для заметок. "
         "Чтобы сохранить заметку, просто отправь мне текст. "
         "Для добавления хэштегов используй #хештег. "
@@ -36,8 +37,8 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         "Напоминания приходят в канал, **за 24 часа до события**.\n"
         "Команды:\n"
         "/find #хештег - найти заметки по хештегу (для этого пользователя)\n"
-        "/all_notes - показать все твои заметки (для этого пользователя)\n" # Обновлено описание
-        "/upcoming_notes - показать все предстоящие напоминания (для канала)\n" # Новая команда
+        "/all_notes - показать все твои заметки (для этого пользователя)\n"
+        "/upcoming_notes - показать все предстоящие напоминания (для канала)\n"
         "/help - показать это сообщение снова"
     )
 
@@ -45,9 +46,25 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     await start(update, context)
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    user_id = update.effective_user.id
-    message_text = update.message.text
-    logger.info(f"Получено сообщение от пользователя {user_id}: '{message_text}'")
+    # Добавляем логирование для отладки источника сообщения
+    if update.message:
+        logger.info(f"Сообщение получено из личного/группового чата. User ID: {update.message.from_user.id}, Chat ID: {update.message.chat_id}")
+        message_obj = update.message
+    elif update.channel_post:
+        logger.info(f"Сообщение получено из канала. Channel ID: {update.channel_post.chat_id}")
+        message_obj = update.channel_post
+    else:
+        logger.warning("Получено обновление, но ни message, ни channel_post не найдены.")
+        return
+
+    user_id = message_obj.from_user.id if message_obj.from_user else None
+    # Если это канал, from_user может быть None, или user_id может быть неактуален для логики канала
+    # Для сохранения заметки, мы все равно используем user_id отправителя, если он есть
+    # Или можно использовать chat_id канала, если заметки должны быть 'привязаны' к каналу, а не к пользователю.
+    # Но для ваших задач, user_id отправителя пока подходит.
+    
+    message_text = message_obj.text
+    logger.info(f"Получено сообщение от пользователя {user_id} (если есть) / из чата {message_obj.chat_id}: '{message_text}'")
 
     hashtags_str = None
     reminder_date = None
@@ -67,7 +84,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
             logger.info(f"Напоминание успешно распарсено: {reminder_date}, найдена строка: '{reminder_string_found}'")
         except ValueError as e:
             logger.error(f"Ошибка парсинга полного формата даты/времени: {e}")
-            await update.message.reply_text("Неверный формат даты/времени для напоминания. Используйте @ЧЧ:ММ ДД-ММ-ГГГГ.")
+            await message_obj.reply_text("Неверный формат даты/времени для напоминания. Используйте @ЧЧ:ММ ДД-ММ-ГГГГ.")
             return
     else:
         date_only_pattern = r'\s*@(\d{2}-\d{2}-\d{4})'
@@ -82,7 +99,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
                 logger.info(f"Напоминание (только дата) успешно распарсено: {reminder_date}, найдена строка: '{reminder_string_found}'")
             except ValueError as e:
                 logger.error(f"Ошибка парсинга только даты: {e}")
-                await update.message.reply_text("Неверный формат даты для напоминания. Используйте @ДД-ММ-ГГГГ или @ЧЧ:ММ ДД-ММ-ГГГГ.")
+                await message_obj.reply_text("Неверный формат даты для напоминания. Используйте @ДД-ММ-ГГГГ или @ЧЧ:ММ ДД-ММ-ГГГГ.")
                 return
 
     cleaned_text = message_text
@@ -98,9 +115,12 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     logger.info(f"Финальный текст заметки: '{note_text}'")
 
     if not note_text:
-        await update.message.reply_text("Пожалуйста, введите текст заметки.")
+        await message_obj.reply_text("Пожалуйста, введите текст заметки.")
         return
 
+    # User_id здесь - это ID пользователя, который отправил сообщение.
+    # Если нужно, чтобы заметки в канале привязывались к ID канала, то user_id = message_obj.chat_id
+    # Но для вашей текущей логики (all_notes для пользователя, upcoming_notes для всех), from_user.id подходит.
     add_note(user_id, note_text, hashtags_str, reminder_date)
     response_text = "Заметка сохранена!"
     if hashtags_str:
@@ -108,17 +128,20 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     if reminder_date:
         response_text += f"\nНапоминание установлено на: {reminder_date.strftime('%H:%M %d-%m-%Y')}"
 
-    await update.message.reply_text(response_text)
+    await message_obj.reply_text(response_text)
 
+
+# Функции команд также должны использовать effective_message для ответа
 async def find_notes_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     user_id = update.effective_user.id
+    message_obj = update.effective_message # Использование effective_message
     if not context.args:
-        await update.message.reply_text("Пожалуйста, укажите хэштег для поиска. Пример: /find #важно")
+        await message_obj.reply_text("Пожалуйста, укажите хэштег для поиска. Пример: /find #важно")
         return
 
     hashtag = context.args[0].lower()
     if not hashtag.startswith('#'):
-        await update.message.reply_text("Хэштег должен начинаться с '#'. Пример: /find #важно")
+        await message_obj.reply_text("Хэштег должен начинаться с '#'. Пример: /find #важно")
         return
     
     search_hashtag = hashtag[1:]
@@ -137,14 +160,11 @@ async def find_notes_command(update: Update, context: ContextTypes.DEFAULT_TYPE)
     else:
         response = f"Заметок по хэштегу '{hashtag}' не найдено."
 
-    await update.message.reply_text(response)
+    await message_obj.reply_text(response)
 
 async def all_notes_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """
-    Отображает все заметки, хранящиеся для текущего пользователя.
-    Эта команда остается для личного использования.
-    """
     user_id = update.effective_user.id
+    message_obj = update.effective_message # Использование effective_message
     notes = get_all_notes_for_user(user_id)
 
     if notes:
@@ -157,40 +177,34 @@ async def all_notes_command(update: Update, context: ContextTypes.DEFAULT_TYPE) 
                 response += f" (Напоминание: {note.reminder_date.strftime('%H:%M %d-%m-%Y')})"
             response += "\n"
     else:
-        await update.message.reply_text("У тебя пока нет заметок.")
+        await message_obj.reply_text("У тебя пока нет заметок.")
 
 async def upcoming_notes_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """
-    Отображает все предстоящие напоминания, доступные для канала/общего просмотра.
-    """
     logger.info("Вызвана команда /upcoming_notes.")
-    notes = get_upcoming_reminders() # Эта функция уже выбирает только будущие напоминания
+    message_obj = update.effective_message # Использование effective_message
+    notes = get_upcoming_reminders()
 
     if notes:
         response = "📅 Предстоящие напоминания:\n"
         for i, note in enumerate(notes):
-            # Проверяем, что reminder_date не None, прежде чем форматировать
             if note.reminder_date:
-                # Используем отформатированную дату и время
                 formatted_date = note.reminder_date.strftime('%H:%M %d-%m-%Y')
                 response += f"{i+1}. {note.text} (Напоминание: {formatted_date})"
                 if note.hashtags:
                     response += f" (# {note.hashtags.replace(' ', ', #')})"
                 response += "\n"
-        # Если заметок много, Telegram может ограничить длину сообщения.
-        # В реальном приложении можно было бы разбить на несколько сообщений.
-        if len(response) > 4000: # Простая проверка на ограничение длины сообщения Telegram
+        if len(response) > 4000:
              response = response[:3900] + "\n... (список обрезан, слишком много заметок)"
     else:
         response = "На данный момент нет предстоящих напоминаний."
 
-    await update.message.reply_text(response)
+    await message_obj.reply_text(response) # Отвечаем в тот же чат, откуда пришла команда
 
 # --- Функция проверки напоминаний ---
 
 async def check_reminders(context: ContextTypes.DEFAULT_TYPE) -> None:
     logger.info("Проверка напоминаний...")
-    reminders = get_upcoming_reminders() # Эта же функция используется, чтобы избежать дублирования логики
+    reminders = get_upcoming_reminders()
     
     channel_id = os.environ.get("TELEGRAM_CHANNEL_ID")
     if not channel_id:
@@ -199,16 +213,13 @@ async def check_reminders(context: ContextTypes.DEFAULT_TYPE) -> None:
 
     for note in reminders:
         try:
-            # Убедитесь, что reminder_date действительно установлено для этого напоминания
             if note.reminder_date:
-                # Отправляем напоминание в указанный канал, используя предпочтительный формат даты.
                 await context.bot.send_message(
                     chat_id=channel_id,
                     text=f"🔔 Напоминание: '{note.text}' назначено на {note.reminder_date.strftime('%H:%M %d-%m-%Y')}."
                 )
                 logger.info(f"Отправлено напоминание в канал {channel_id} для заметки {note.id}")
                 
-                # Обнуляем reminder_date в базе данных, чтобы напоминание не отправлялось повторно.
                 update_note_reminder_date(note.id)
                 logger.info(f"Дата напоминания для заметки {note.id} обнулена.")
 
@@ -229,12 +240,26 @@ def main() -> None:
     application.add_handler(CommandHandler("help", help_command))
     application.add_handler(CommandHandler("find", find_notes_command))
     application.add_handler(CommandHandler("all_notes", all_notes_command))
-    application.add_handler(CommandHandler("upcoming_notes", upcoming_notes_command)) # Регистрация новой команды
+    application.add_handler(CommandHandler("upcoming_notes", upcoming_notes_command))
     
+    # *** ИЗМЕНЕНИЯ ЗДЕСЬ ***
+    # Обработчик для текстовых сообщений (личные чаты, группы)
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
+    # ДОПОЛНИТЕЛЬНЫЙ обработчик для текстовых постов в каналах
+    application.add_handler(MessageHandler(filters.CHANNEL_POST & filters.TEXT & ~filters.COMMAND, handle_message))
+    
+    # Обработчики команд для каналов (они также должны реагировать на команды в channel_post)
+    # CommandHandler автоматически проверяет update.effective_message, но явное добавление фильтра ChannelPost
+    # для уверенности, если команды не работали.
+    application.add_handler(CommandHandler("start", start, filters=filters.COMMAND & filters.CHANNEL_POST))
+    application.add_handler(CommandHandler("help", help_command, filters=filters.COMMAND & filters.CHANNEL_POST))
+    application.add_handler(CommandHandler("find", find_notes_command, filters=filters.COMMAND & filters.CHANNEL_POST))
+    application.add_handler(CommandHandler("all_notes", all_notes_command, filters=filters.COMMAND & filters.CHANNEL_POST))
+    application.add_handler(CommandHandler("upcoming_notes", upcoming_notes_command, filters=filters.COMMAND & filters.CHANNEL_POST))
+
 
     job_queue = application.job_queue
-    job_queue.run_repeating(check_reminders, interval=30, first=0) 
+    job_queue.run_repeating(check_reminders, interval=300, first=0) 
 
     def run_flask_server():
         print(f"Starting Flask web server on port {PORT}...")
