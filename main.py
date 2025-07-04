@@ -4,7 +4,7 @@ from telegram.ext import Application, CommandHandler, MessageHandler, filters, C
 import re
 from datetime import datetime, timedelta
 from database import add_note, find_notes_by_user_and_hashtag, get_upcoming_reminders, get_all_notes_for_user, update_note_reminder_date
-import asyncio 
+import asyncio # <--- Make sure this is imported
 import os
 from flask import Flask, request
 import threading
@@ -215,7 +215,13 @@ async def check_reminders(context: ContextTypes.DEFAULT_TYPE) -> None:
 # Функция для запуска Telegram бота в отдельном потоке
 def run_telegram_bot(application: Application) -> None:
     print("Starting Telegram bot polling in a separate thread...")
-    application.run_polling(drop_pending_updates=True)
+    # Create a new event loop for this thread and set it as the current one
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
+    # Run the polling operation within the new event loop
+    loop.run_until_complete(application.run_polling(drop_pending_updates=True))
+    # Close the loop when done (though it typically runs indefinitely)
+    loop.close()
 
 def main() -> None:
     BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
@@ -237,7 +243,6 @@ def main() -> None:
     job_queue = application.job_queue
     job_queue.run_repeating(check_reminders, interval=30, first=0) 
 
-    # --- ИЗМЕНЕНИЯ ЗДЕСЬ ---
     # Запускаем Telegram-бот в отдельном потоке
     telegram_thread = threading.Thread(target=run_telegram_bot, args=(application,))
     telegram_thread.daemon = True 
@@ -247,7 +252,6 @@ def main() -> None:
     # и постоянно отвечал на Health Check запросы Render.com
     print(f"Starting Flask web server on port {PORT} in main thread...")
     web_app.run(host='0.0.0.0', port=PORT, debug=False, use_reloader=False)
-    # --- КОНЕЦ ИЗМЕНЕНИЙ ---
 
 if __name__ == '__main__':
     main()
