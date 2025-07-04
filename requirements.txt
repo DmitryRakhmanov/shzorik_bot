@@ -2,3 +2,4 @@ python-telegram-bot[webhooks]
 SQLAlchemy
 httpx
 APScheduler
+psycopg2-binary
