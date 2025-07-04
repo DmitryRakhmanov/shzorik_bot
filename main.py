@@ -263,7 +263,7 @@ def main() -> None:
     if not WEBHOOK_SECRET_TOKEN:
         logger.warning("WEBHOOK_SECRET_TOKEN environment variable is not set. It is highly recommended for webhook security.")
         # Fallback to a default if not set, but strongly recommend setting it in production
-        WEBHOOK_SECRET_TOKEN = "your_strong_secret_token_here_change_me" 
+        WEBHOOK_SECRET_TOKEN = "e6f1a4w6857e8f1f3a9ca432af45c7d1" 
 
     # Initialize the database (creates tables if they don't exist)
     initialize_db() 
