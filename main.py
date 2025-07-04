@@ -260,7 +260,7 @@ def main() -> None:
     if not BOT_TOKEN:
         raise Exception("TELEGRAM_BOT_TOKEN environment variable is not set! Please set it.")
 
-    PORT = int(os.environ.get("PORT", 8080)) # Default to 8080 or 443 for webhooks
+    PORT = int(os.environ.get("PORT", 10000)) # Default to 8080 or 443 for webhooks
     WEBHOOK_URL = os.environ.get("WEBHOOK_URL")
     if not WEBHOOK_URL:
         raise Exception("WEBHOOK_URL environment variable is not set! Please set it to your Render.com public URL + /telegram")
@@ -302,13 +302,13 @@ def main() -> None:
     logger.info(f"Setting webhook URL to: {WEBHOOK_URL}")
 
     webhook_params = {
-        "listen": "0.0.0.0", # Listen on all available network interfaces
-        "port": PORT,
-        "url_path": "telegram", # The specific path for the webhook (e.g., https://your-service.onrender.com/telegram)
-        "webhook_url": WEBHOOK_URL,
-    }
+    "listen": "0.0.0.0",
+    "port": PORT,
+    "url_path": "telegram",
+    "webhook_url": WEBHOOK_URL,
+    "health_check_path": "/_health",  # <--- ДОБАВЬТЕ ЭТУ СТРОКУ
+}
 
-    # Only add secret_token if it's explicitly set (better for production)
     if WEBHOOK_SECRET_TOKEN:
         webhook_params["secret_token"] = WEBHOOK_SECRET_TOKEN
     else:
