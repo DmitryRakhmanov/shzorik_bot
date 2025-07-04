@@ -60,29 +60,24 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     message_text = message_obj.text
     logger.info(f"Получено сообщение от пользователя {user_id} (если есть) / из чата {message_obj.chat_id}: '{message_text}'")
 
+    # Проверяем, является ли сообщение командой (даже если оно прошло через MessageHandler)
+    if message_obj.text and message_obj.text.startswith('/'):
+        logger.warning(f"MessageHandler получил команду: '{message_text}'. Игнорируем в handle_message.")
+        return 
+
     hashtags_str = None
     reminder_date = None
     reminder_string_found = None
 
-    # Проверяем, является ли сообщение командой (даже если оно прошло через MessageHandler)
-    # Это дополнительная защитная проверка.
-    if message_obj.text and message_obj.text.startswith('/'):
-        # Если это команда, но почему-то не была обработана CommandHandler, игнорируем здесь
-        logger.warning(f"MessageHandler получил команду: '{message_text}'. Игнорируем в handle_message.")
-        return # Важно: прерываем выполнение, чтобы не сохранить команду как заметку
-
     full_datetime_pattern = r'\s*@(\d{2}:\d{2})\s+(\d{2}-\d{2}-\d{4})'
     full_datetime_match = re.search(full_datetime_pattern, message_text, re.DOTALL)
-    logger.info(f"Результат поиска полного формата даты/времени: {full_datetime_match}")
 
     if full_datetime_match:
         time_str = full_datetime_match.group(1)
         date_str = full_datetime_match.group(2)
-        logger.info(f"Найдены время: '{time_str}', дата: '{date_str}'")
         try:
             reminder_date = datetime.strptime(f"{date_str} {time_str}", '%d-%m-%Y %H:%M')
             reminder_string_found = full_datetime_match.group(0)
-            logger.info(f"Напоминание успешно распарсено: {reminder_date}, найдена строка: '{reminder_string_found}'")
         except ValueError as e:
             logger.error(f"Ошибка парсинга полного формата даты/времени: {e}")
             await message_obj.reply_text("Неверный формат даты/времени для напоминания. Используйте @ЧЧ:ММ ДД-ММ-ГГГГ.")
@@ -90,14 +85,11 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     else:
         date_only_pattern = r'\s*@(\d{2}-\d{2}-\d{4})'
         date_only_match = re.search(date_only_pattern, message_text, re.DOTALL)
-        logger.info(f"Результат поиска только даты: {date_only_match}")
         if date_only_match:
             date_str = date_only_match.group(1)
-            logger.info(f"Найдена только дата: '{date_str}'")
             try:
                 reminder_date = datetime.strptime(date_str, '%d-%m-%Y').replace(hour=9, minute=0)
                 reminder_string_found = date_only_match.group(0)
-                logger.info(f"Напоминание (только дата) успешно распарсено: {reminder_date}, найдена строка: '{reminder_string_found}'")
             except ValueError as e:
                 logger.error(f"Ошибка парсинга только даты: {e}")
                 await message_obj.reply_text("Неверный формат даты для напоминания. Используйте @ДД-ММ-ГГГГ или @ЧЧ:ММ ДД-ММ-ГГГГ.")
@@ -106,14 +98,11 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     cleaned_text = message_text
     if reminder_string_found:
         cleaned_text = re.sub(re.escape(reminder_string_found), '', cleaned_text).strip()
-        logger.info(f"Текст после удаления напоминания: '{cleaned_text}'")
     
     hashtags = re.findall(r'#(\w+)', cleaned_text)
     hashtags_str = ' '.join(hashtags).lower() if hashtags else None
-    logger.info(f"Найденные хэштеги: {hashtags_str}")
 
     note_text = re.sub(r'#\w+', '', cleaned_text).strip()
-    logger.info(f"Финальный текст заметки: '{note_text}'")
 
     if not note_text:
         await message_obj.reply_text("Пожалуйста, введите текст заметки.")
@@ -223,6 +212,10 @@ async def check_reminders(context: ContextTypes.DEFAULT_TYPE) -> None:
         except Exception as e:
             logger.error(f"Не удалось отправить напоминание в канал {channel_id}: {e}")
 
+# Функция для запуска Telegram бота в отдельном потоке
+def run_telegram_bot(application: Application) -> None:
+    print("Starting Telegram bot polling in a separate thread...")
+    application.run_polling(drop_pending_updates=True)
 
 def main() -> None:
     BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
@@ -233,34 +226,28 @@ def main() -> None:
 
     application = Application.builder().token(BOT_TOKEN).build()
 
-    # --- ОБНОВЛЕННЫЕ ОБРАБОТЧИКИ ---
-    # CommandHandler по умолчанию работают для всех типов чатов (message, channel_post).
-    # Они должны быть в начале, чтобы обрабатывать команды первыми.
     application.add_handler(CommandHandler("start", start))
     application.add_handler(CommandHandler("help", help_command))
     application.add_handler(CommandHandler("find", find_notes_command))
     application.add_handler(CommandHandler("all_notes", all_notes_command))
     application.add_handler(CommandHandler("upcoming_notes", upcoming_notes_command))
     
-    # MessageHandler для обработки текстовых сообщений, которые НЕ являются командами
-    # Этот обработчик должен быть ПОСЛЕ CommandHandler'ов, чтобы команды имели приоритет.
-    # filters.ALL включает в себя как Message, так и ChannelPost.
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND & filters.ALL, handle_message))
-    # --- КОНЕЦ ОБНОВЛЕННЫХ ОБРАБОТЧИКОВ ---
 
     job_queue = application.job_queue
     job_queue.run_repeating(check_reminders, interval=30, first=0) 
 
-    def run_flask_server():
-        print(f"Starting Flask web server on port {PORT}...")
-        web_app.run(host='0.0.0.0', port=PORT, debug=False, use_reloader=False)
+    # --- ИЗМЕНЕНИЯ ЗДЕСЬ ---
+    # Запускаем Telegram-бот в отдельном потоке
+    telegram_thread = threading.Thread(target=run_telegram_bot, args=(application,))
+    telegram_thread.daemon = True 
+    telegram_thread.start()
 
-    flask_thread = threading.Thread(target=run_flask_server)
-    flask_thread.daemon = True 
-    flask_thread.start()
-
-    print("Starting Telegram bot...")
-    application.run_polling(drop_pending_updates=True)
+    # Запускаем Flask-сервер в основном потоке, чтобы он блокировал выполнение
+    # и постоянно отвечал на Health Check запросы Render.com
+    print(f"Starting Flask web server on port {PORT} in main thread...")
+    web_app.run(host='0.0.0.0', port=PORT, debug=False, use_reloader=False)
+    # --- КОНЕЦ ИЗМЕНЕНИЙ ---
 
 if __name__ == '__main__':
     main()
