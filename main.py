@@ -28,7 +28,6 @@ logger = logging.getLogger(__name__)
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     user = update.effective_user
-    # Используем update.effective_message.reply_html для ответа в тот же чат (личный или канал)
     await update.effective_message.reply_html(
         f"Привет, {user.mention_html()}! Я бот для заметок. "
         "Чтобы сохранить заметку, просто отправь мне текст. "
@@ -46,7 +45,6 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     await start(update, context)
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    # Добавляем логирование для отладки источника сообщения
     if update.message:
         logger.info(f"Сообщение получено из личного/группового чата. User ID: {update.message.from_user.id}, Chat ID: {update.message.chat_id}")
         message_obj = update.message
@@ -58,10 +56,6 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         return
 
     user_id = message_obj.from_user.id if message_obj.from_user else None
-    # Если это канал, from_user может быть None, или user_id может быть неактуален для логики канала
-    # Для сохранения заметки, мы все равно используем user_id отправителя, если он есть
-    # Или можно использовать chat_id канала, если заметки должны быть 'привязаны' к каналу, а не к пользователю.
-    # Но для ваших задач, user_id отправителя пока подходит.
     
     message_text = message_obj.text
     logger.info(f"Получено сообщение от пользователя {user_id} (если есть) / из чата {message_obj.chat_id}: '{message_text}'")
@@ -118,9 +112,6 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         await message_obj.reply_text("Пожалуйста, введите текст заметки.")
         return
 
-    # User_id здесь - это ID пользователя, который отправил сообщение.
-    # Если нужно, чтобы заметки в канале привязывались к ID канала, то user_id = message_obj.chat_id
-    # Но для вашей текущей логики (all_notes для пользователя, upcoming_notes для всех), from_user.id подходит.
     add_note(user_id, note_text, hashtags_str, reminder_date)
     response_text = "Заметка сохранена!"
     if hashtags_str:
@@ -131,10 +122,9 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     await message_obj.reply_text(response_text)
 
 
-# Функции команд также должны использовать effective_message для ответа
 async def find_notes_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     user_id = update.effective_user.id
-    message_obj = update.effective_message # Использование effective_message
+    message_obj = update.effective_message
     if not context.args:
         await message_obj.reply_text("Пожалуйста, укажите хэштег для поиска. Пример: /find #важно")
         return
@@ -164,7 +154,7 @@ async def find_notes_command(update: Update, context: ContextTypes.DEFAULT_TYPE)
 
 async def all_notes_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     user_id = update.effective_user.id
-    message_obj = update.effective_message # Использование effective_message
+    message_obj = update.effective_message
     notes = get_all_notes_for_user(user_id)
 
     if notes:
@@ -181,7 +171,7 @@ async def all_notes_command(update: Update, context: ContextTypes.DEFAULT_TYPE) 
 
 async def upcoming_notes_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     logger.info("Вызвана команда /upcoming_notes.")
-    message_obj = update.effective_message # Использование effective_message
+    message_obj = update.effective_message
     notes = get_upcoming_reminders()
 
     if notes:
@@ -198,7 +188,7 @@ async def upcoming_notes_command(update: Update, context: ContextTypes.DEFAULT_T
     else:
         response = "На данный момент нет предстоящих напоминаний."
 
-    await message_obj.reply_text(response) # Отвечаем в тот же чат, откуда пришла команда
+    await message_obj.reply_text(response)
 
 # --- Функция проверки напоминаний ---
 
@@ -236,30 +226,22 @@ def main() -> None:
 
     application = Application.builder().token(BOT_TOKEN).build()
 
+    # --- ОБНОВЛЕННЫЕ ОБРАБОТЧИКИ ---
+    # CommandHandler по умолчанию работает для всех типов чатов (message, channel_post),
+    # если не указаны дополнительные фильтры. Это более надежно.
     application.add_handler(CommandHandler("start", start))
     application.add_handler(CommandHandler("help", help_command))
     application.add_handler(CommandHandler("find", find_notes_command))
     application.add_handler(CommandHandler("all_notes", all_notes_command))
     application.add_handler(CommandHandler("upcoming_notes", upcoming_notes_command))
     
-    # *** ИЗМЕНЕНИЯ ЗДЕСЬ ***
-    # Обработчик для текстовых сообщений (личные чаты, группы)
-    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
-    # ДОПОЛНИТЕЛЬНЫЙ обработчик для текстовых постов в каналах
-    application.add_handler(MessageHandler(filters.CHANNEL_POST & filters.TEXT & ~filters.COMMAND, handle_message))
-    
-    # Обработчики команд для каналов (они также должны реагировать на команды в channel_post)
-    # CommandHandler автоматически проверяет update.effective_message, но явное добавление фильтра ChannelPost
-    # для уверенности, если команды не работали.
-    application.add_handler(CommandHandler("start", start, filters=filters.COMMAND & filters.CHANNEL_POST))
-    application.add_handler(CommandHandler("help", help_command, filters=filters.COMMAND & filters.CHANNEL_POST))
-    application.add_handler(CommandHandler("find", find_notes_command, filters=filters.COMMAND & filters.CHANNEL_POST))
-    application.add_handler(CommandHandler("all_notes", all_notes_command, filters=filters.COMMAND & filters.CHANNEL_POST))
-    application.add_handler(CommandHandler("upcoming_notes", upcoming_notes_command, filters=filters.COMMAND & filters.CHANNEL_POST))
-
+    # MessageHandler для обработки текстовых сообщений, которые не являются командами
+    # Filters.ALL включает update.message и update.channel_post
+    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND & filters.ALL, handle_message))
+    # --- КОНЕЦ ОБНОВЛЕННЫХ ОБРАБОТЧИКОВ ---
 
     job_queue = application.job_queue
-    job_queue.run_repeating(check_reminders, interval=300, first=0) 
+    job_queue.run_repeating(check_reminders, interval=30, first=0) 
 
     def run_flask_server():
         print(f"Starting Flask web server on port {PORT}...")
