@@ -35,7 +35,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         f"Привет, {user.mention_html()}! Я бот для заметок. "
         "Чтобы сохранить заметку, просто отправь мне текст. "
         "Для добавления хэштегов используй #хештег. "
-        "Для напоминания используй формат: 'текст заметки #тег #другой_тег @ДД-ММ-ГГГГ ЧЧ:ММ'.\n"
+        "Для напоминания используй формат: 'текст заметки #тег #другой_тег @ЧЧ:ММ ДД-ММ-ГГГГ'.\n" # Обновлено в описании
         "Напоминания приходят в канал, **за 24 часа до события**.\n"
         "Команды:\n"
         "/find #хештег - найти заметки по хештегу\n"
@@ -56,30 +56,31 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     # Инициализируем переменные
     hashtags_str = None
     reminder_date = None
-    reminder_string_found = None # Будет хранить найденную подстроку напоминания (например, "@01-01-2025 10:00")
+    reminder_string_found = None # Будет хранить найденную подстроку напоминания (например, "@01:22 05-07-2025")
 
     # --- Извлечение напоминания (делаем это первым, чтобы избежать конфликтов) ---
-    # Поиск полного формата @ДД-ММ-ГГГГ ЧЧ:ММ
-    # Используем re.DOTALL, чтобы '.' соответствовал также переносам строк.
-    # Добавил \s* перед @, чтобы учесть возможные пробелы/переносы строк.
-    full_datetime_pattern = r'\s*@(\d{2}-\d{2}-\d{4})\s+(\d{2}:\d{2})'
+    # ИСПРАВЛЕНО: Поиск полного формата @ЧЧ:ММ ДД-ММ-ГГГГ
+    # Теперь regex ожидает время, затем дату.
+    full_datetime_pattern = r'\s*@(\d{2}:\d{2})\s+(\d{2}-\d{2}-\d{4})'
     full_datetime_match = re.search(full_datetime_pattern, message_text, re.DOTALL)
     logger.info(f"Результат поиска полного формата даты/времени: {full_datetime_match}")
 
     if full_datetime_match:
-        date_str = full_datetime_match.group(1)
-        time_str = full_datetime_match.group(2)
-        logger.info(f"Найдены дата: '{date_str}', время: '{time_str}'")
+        time_str = full_datetime_match.group(1) # Время теперь в первой группе
+        date_str = full_datetime_match.group(2) # Дата теперь во второй группе
+        logger.info(f"Найдены время: '{time_str}', дата: '{date_str}'")
         try:
+            # ИСПРАВЛЕНО: strptime теперь ожидает время, затем дату
             reminder_date = datetime.strptime(f"{date_str} {time_str}", '%d-%m-%Y %H:%M')
             reminder_string_found = full_datetime_match.group(0) # Сохраняем всю найденную строку
             logger.info(f"Напоминание успешно распарсено: {reminder_date}, найдена строка: '{reminder_string_found}'")
         except ValueError as e:
             logger.error(f"Ошибка парсинга полного формата даты/времени: {e}")
-            await update.message.reply_text("Неверный формат даты/времени для напоминания. Используйте @ДД-ММ-ГГГГ ЧЧ:ММ.")
+            await update.message.reply_text("Неверный формат даты/времени для напоминания. Используйте @ЧЧ:ММ ДД-ММ-ГГГГ.")
             return
     else:
         # Если полный формат не найден, ищем формат только с датой @ДД-ММ-ГГГГ
+        # Этот паттерн остался без изменений, так как он соответствует формату @ДД-ММ-ГГГГ
         date_only_pattern = r'\s*@(\d{2}-\d{2}-\d{4})'
         date_only_match = re.search(date_only_pattern, message_text, re.DOTALL)
         logger.info(f"Результат поиска только даты: {date_only_match}")
@@ -92,7 +93,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
                 logger.info(f"Напоминание (только дата) успешно распарсено: {reminder_date}, найдена строка: '{reminder_string_found}'")
             except ValueError as e:
                 logger.error(f"Ошибка парсинга только даты: {e}")
-                await update.message.reply_text("Неверный формат даты для напоминания. Используйте @ДД-ММ-ГГГГ или @ДД-ММ-ГГГГ ЧЧ:ММ.")
+                await update.message.reply_text("Неверный формат даты для напоминания. Используйте @ДД-ММ-ГГГГ или @ЧЧ:ММ ДД-ММ-ГГГГ.")
                 return
 
     # --- Очистка текста заметки и извлечение хэштегов ---
@@ -237,7 +238,7 @@ def main() -> None:
     # Настраиваем JobQueue для повторяющихся задач (например, проверки напоминаний)
     job_queue = application.job_queue
     # Проверяем каждые 300 секунд (5 минут)
-    job_queue.run_repeating(check_reminders, interval=900, first=0) 
+    job_queue.run_repeating(check_reminders, interval=30, first=0) 
 
     # Функция для запуска Flask-веб-сервера в отдельном потоке
     def run_flask_server():
