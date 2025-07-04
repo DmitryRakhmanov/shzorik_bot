@@ -64,6 +64,13 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     reminder_date = None
     reminder_string_found = None
 
+    # Проверяем, является ли сообщение командой (даже если оно прошло через MessageHandler)
+    # Это дополнительная защитная проверка.
+    if message_obj.text and message_obj.text.startswith('/'):
+        # Если это команда, но почему-то не была обработана CommandHandler, игнорируем здесь
+        logger.warning(f"MessageHandler получил команду: '{message_text}'. Игнорируем в handle_message.")
+        return # Важно: прерываем выполнение, чтобы не сохранить команду как заметку
+
     full_datetime_pattern = r'\s*@(\d{2}:\d{2})\s+(\d{2}-\d{2}-\d{4})'
     full_datetime_match = re.search(full_datetime_pattern, message_text, re.DOTALL)
     logger.info(f"Результат поиска полного формата даты/времени: {full_datetime_match}")
@@ -227,16 +234,17 @@ def main() -> None:
     application = Application.builder().token(BOT_TOKEN).build()
 
     # --- ОБНОВЛЕННЫЕ ОБРАБОТЧИКИ ---
-    # CommandHandler по умолчанию работает для всех типов чатов (message, channel_post),
-    # если не указаны дополнительные фильтры. Это более надежно.
+    # CommandHandler по умолчанию работают для всех типов чатов (message, channel_post).
+    # Они должны быть в начале, чтобы обрабатывать команды первыми.
     application.add_handler(CommandHandler("start", start))
     application.add_handler(CommandHandler("help", help_command))
     application.add_handler(CommandHandler("find", find_notes_command))
     application.add_handler(CommandHandler("all_notes", all_notes_command))
     application.add_handler(CommandHandler("upcoming_notes", upcoming_notes_command))
     
-    # MessageHandler для обработки текстовых сообщений, которые не являются командами
-    # Filters.ALL включает update.message и update.channel_post
+    # MessageHandler для обработки текстовых сообщений, которые НЕ являются командами
+    # Этот обработчик должен быть ПОСЛЕ CommandHandler'ов, чтобы команды имели приоритет.
+    # filters.ALL включает в себя как Message, так и ChannelPost.
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND & filters.ALL, handle_message))
     # --- КОНЕЦ ОБНОВЛЕННЫХ ОБРАБОТЧИКОВ ---
 
