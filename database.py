@@ -92,6 +92,9 @@ def find_notes_by_user_and_hashtag(user_id: int, hashtag: str):
     session.close()
     return notes
 
+def initialize_db():
+    Base.metadata.create_all(bind=engine)
+
 def get_upcoming_reminders():
     """
     Извлекает напоминания, время уведомления по которым (дата события минус 1 день)
