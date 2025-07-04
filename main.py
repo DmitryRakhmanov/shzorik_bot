@@ -305,11 +305,11 @@ def main() -> None:
     logger.info(f"Setting webhook URL to: {WEBHOOK_URL}")
 
     webhook_params = {
-        "listen": "0.0.0.0", # Listen on all available network interfaces
-        "port": PORT,
-        "url_path": "telegram", # The specific path for the webhook (e.g., https://your-service.onrender.com/telegram)
-        "webhook_url": WEBHOOK_URL,
-        "health_check_path": "/_health",  # <--- ДОБАВЛЕНО: Для проверки работоспособности Render
+    "listen": "0.0.0.0",
+    "port": PORT,
+    "url_path": "telegram",
+    "webhook_url": WEBHOOK_URL,
+    # "health_check_path": "/_health",  # <--- REMOVE OR COMMENT THIS LINE
     }
 
     # Only add secret_token if it's explicitly set (better for production)
