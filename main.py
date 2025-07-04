@@ -4,7 +4,7 @@ import re
 from datetime import datetime, timedelta
 
 # Import necessary Telegram modules
-from telegram import Update
+from telegram import Update, __version__ as TG_BOT_VERSION # <--- ДОБАВЛЕНО: Импорт для проверки версии
 from telegram.ext import (
     Application,
     CommandHandler,
@@ -30,6 +30,9 @@ logging.basicConfig(
 )
 logging.getLogger(__name__).setLevel(logging.INFO)
 logger = logging.getLogger(__name__)
+
+# <--- ДОБАВЛЕНО: Логирование версии python-telegram-bot
+logger.info(f"Using python-telegram-bot version: {TG_BOT_VERSION}")
 
 # --- Command Handlers ---
 
@@ -145,7 +148,7 @@ async def find_notes_command(update: Update, context: ContextTypes.DEFAULT_TYPE)
     message_obj = update.effective_message
     if not context.args:
         await message_obj.reply_text("Пожалуйста, укажите хэштег для поиска. Пример: /find #важно")
-        return
+    return
 
     hashtag = context.args[0].lower()
     if not hashtag.startswith('#'):
@@ -260,7 +263,7 @@ def main() -> None:
     if not BOT_TOKEN:
         raise Exception("TELEGRAM_BOT_TOKEN environment variable is not set! Please set it.")
 
-    PORT = int(os.environ.get("PORT", 10000)) # Default to 8080 or 443 for webhooks
+    PORT = int(os.environ.get("PORT", 8080)) # Default to 8080 or 443 for webhooks
     WEBHOOK_URL = os.environ.get("WEBHOOK_URL")
     if not WEBHOOK_URL:
         raise Exception("WEBHOOK_URL environment variable is not set! Please set it to your Render.com public URL + /telegram")
@@ -302,13 +305,17 @@ def main() -> None:
     logger.info(f"Setting webhook URL to: {WEBHOOK_URL}")
 
     webhook_params = {
-    "listen": "0.0.0.0",
-    "port": PORT,
-    "url_path": "telegram",
-    "webhook_url": WEBHOOK_URL,
-    "health_check_path": "/_health",  # <--- ДОБАВЬТЕ ЭТУ СТРОКУ
-}
+        "listen": "0.0.0.0", # Listen on all available network interfaces
+        "port": PORT,
+        "url_path": "telegram", # The specific path for the webhook (e.g., https://your-service.onrender.com/telegram)
+        "webhook_url": WEBHOOK_URL,
+        "health_check_path": "/_health",  # <--- ДОБАВЛЕНО: Для проверки работоспособности Render
+    }
 
+    # Only add secret_token if it's explicitly set (better for production)
+    # Если вы устанавливаете вебхук через BotFather, то Telegram НЕ отправляет secret_token.
+    # В этом случае либо не передавайте secret_token в run_webhook, либо используйте API Telegram
+    # для установки вебхука с secret_token.
     if WEBHOOK_SECRET_TOKEN:
         webhook_params["secret_token"] = WEBHOOK_SECRET_TOKEN
     else:
