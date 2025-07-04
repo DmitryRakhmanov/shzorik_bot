@@ -4,20 +4,13 @@ from telegram.ext import Application, CommandHandler, MessageHandler, filters, C
 import re
 from datetime import datetime, timedelta
 from database import add_note, find_notes_by_user_and_hashtag, get_upcoming_reminders, get_all_notes_for_user, update_note_reminder_date
-import asyncio # <--- Make sure this is imported
+import asyncio 
 import os
-from flask import Flask, request
-import threading
+# No need for Flask and threading if using PTB's webhook server
+# from flask import Flask, request
+# import threading 
 
-# Создаем Flask-приложение для проверки работоспособности (требуется Render.com)
-web_app = Flask(__name__)
-
-# Определяем маршрут для проверки работоспособности
-@web_app.route('/health')
-def health_check():
-    """Конечная точка для Render.com, чтобы проверить, работает ли сервис."""
-    return 'OK', 200
-
+# Configure logging
 logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s', level=logging.INFO
 )
@@ -28,7 +21,8 @@ logger = logging.getLogger(__name__)
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     user = update.effective_user
-    await update.effective_message.reply_html(
+    # Use effective_chat.id for replies to ensure it goes to the correct place (private, group, or channel if command)
+    await update.effective_chat.send_message(
         f"Привет, {user.mention_html()}! Я бот для заметок. "
         "Чтобы сохранить заметку, просто отправь мне текст. "
         "Для добавления хэштегов используй #хештег. "
@@ -45,23 +39,25 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     await start(update, context)
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    if update.message:
-        logger.info(f"Сообщение получено из личного/группового чата. User ID: {update.message.from_user.id}, Chat ID: {update.message.chat_id}")
-        message_obj = update.message
-    elif update.channel_post:
-        logger.info(f"Сообщение получено из канала. Channel ID: {update.channel_post.chat_id}")
-        message_obj = update.channel_post
-    else:
-        logger.warning("Получено обновление, но ни message, ни channel_post не найдены.")
+    # Use effective_message for consistency
+    message_obj = update.effective_message
+    if not message_obj:
+        logger.warning("Получено обновление без effective_message.")
         return
 
     user_id = message_obj.from_user.id if message_obj.from_user else None
     
+    # Log where the message came from
+    if update.message:
+        logger.info(f"Сообщение получено из личного/группового чата. User ID: {user_id}, Chat ID: {message_obj.chat_id}")
+    elif update.channel_post:
+        logger.info(f"Сообщение получено из канала. Channel ID: {message_obj.chat_id}")
+
     message_text = message_obj.text
     logger.info(f"Получено сообщение от пользователя {user_id} (если есть) / из чата {message_obj.chat_id}: '{message_text}'")
 
     # Проверяем, является ли сообщение командой (даже если оно прошло через MessageHandler)
-    if message_obj.text and message_obj.text.startswith('/'):
+    if message_text and message_text.startswith('/'):
         logger.warning(f"MessageHandler получил команду: '{message_text}'. Игнорируем в handle_message.")
         return 
 
@@ -144,7 +140,7 @@ async def find_notes_command(update: Update, context: ContextTypes.DEFAULT_TYPE)
                 response += f" (Напоминание: {note.reminder_date.strftime('%H:%M %d-%m-%Y')})"
             response += "\n"
     else:
-        response = f"Заметок по хэштегу '{hashtag}' не найдено."
+        response = f"Заметок по хэштег '{hashtag}' не найдено."
 
     await message_obj.reply_text(response)
 
@@ -212,23 +208,15 @@ async def check_reminders(context: ContextTypes.DEFAULT_TYPE) -> None:
         except Exception as e:
             logger.error(f"Не удалось отправить напоминание в канал {channel_id}: {e}")
 
-# Функция для запуска Telegram бота в отдельном потоке
-def run_telegram_bot(application: Application) -> None:
-    print("Starting Telegram bot polling in a separate thread...")
-    # Create a new event loop for this thread and set it as the current one
-    loop = asyncio.new_event_loop()
-    asyncio.set_event_loop(loop)
-    # Run the polling operation within the new event loop
-    loop.run_until_complete(application.run_polling(drop_pending_updates=True))
-    # Close the loop when done (though it typically runs indefinitely)
-    loop.close()
-
 def main() -> None:
     BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
     if not BOT_TOKEN:
         raise Exception("TELEGRAM_BOT_TOKEN environment variable is not set! Please set it.")
 
-    PORT = int(os.environ.get("PORT", 10000))
+    PORT = int(os.environ.get("PORT", 10000)) # Port for the webhook server
+    WEBHOOK_URL = os.environ.get("WEBHOOK_URL") # This will be your Render.com public URL + /telegram
+    if not WEBHOOK_URL:
+        raise Exception("WEBHOOK_URL environment variable is not set! Please set it to your Render.com public URL + /telegram")
 
     application = Application.builder().token(BOT_TOKEN).build()
 
@@ -238,20 +226,25 @@ def main() -> None:
     application.add_handler(CommandHandler("all_notes", all_notes_command))
     application.add_handler(CommandHandler("upcoming_notes", upcoming_notes_command))
     
-    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND & filters.ALL, handle_message))
+    # Updated filter for handle_message to properly capture messages from channels and groups
+    # Channel posts are also TEXT and not COMMANDS.
+    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND & (filters.UpdateType.MESSAGE | filters.UpdateType.CHANNEL_POST), handle_message))
+
 
     job_queue = application.job_queue
-    job_queue.run_repeating(check_reminders, interval=30, first=0) 
+    job_queue.run_repeating(check_reminders, interval=300, first=0) 
 
-    # Запускаем Telegram-бот в отдельном потоке
-    telegram_thread = threading.Thread(target=run_telegram_bot, args=(application,))
-    telegram_thread.daemon = True 
-    telegram_thread.start()
-
-    # Запускаем Flask-сервер в основном потоке, чтобы он блокировал выполнение
-    # и постоянно отвечал на Health Check запросы Render.com
-    print(f"Starting Flask web server on port {PORT} in main thread...")
-    web_app.run(host='0.0.0.0', port=PORT, debug=False, use_reloader=False)
+    # --- Major Change: Using Webhooks Instead of Polling ---
+    logger.info(f"Starting webhook server on port {PORT} with URL path /telegram")
+    logger.info(f"Setting webhook URL to: {WEBHOOK_URL}")
+    application.run_webhook(
+        listen="0.0.0.0",
+        port=PORT,
+        url_path="telegram", # This is the path for the webhook, e.g., https://your-service.onrender.com/telegram
+        webhook_url=WEBHOOK_URL,
+        secret_token=os.environ.get("WEBHOOK_SECRET_TOKEN", "your_strong_secret_token_here") # Recommended for security
+    )
+    # --- End of Major Change ---
 
 if __name__ == '__main__':
     main()
