@@ -1,5 +1,5 @@
-python-telegram-bot[webhooks]
-SQLAlchemy
-httpx
-APScheduler
-psycopg2-binary
+python-telegram-bot[webhooks]==21.0  # Or the latest stable version like 21.1, etc.
+APScheduler==3.10.4
+SQLAlchemy==2.0.29
+httpx==0.27.0
+psycopg2-binary==2.9.9
