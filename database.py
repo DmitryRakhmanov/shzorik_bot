@@ -5,7 +5,7 @@ from datetime import datetime, timezone
 from zoneinfo import ZoneInfo
 
 # Настройка базы данных
-DATABASE_URL = "postgresql://username:password@hostname:port/dbname"  # Замени на свои данные
+DATABASE_URL = os.environ.get("DATABASE_URL")
 
 engine = create_engine(DATABASE_URL)
 SessionLocal = sessionmaker(bind=engine)
