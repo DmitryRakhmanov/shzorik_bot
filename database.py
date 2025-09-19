@@ -1,30 +1,39 @@
-# database.py
-from datetime import datetime
-from zoneinfo import ZoneInfo
-from sqlalchemy import create_engine, Column, Integer, String, DateTime, Text
-from sqlalchemy.orm import sessionmaker, declarative_base
 import os
+import logging
+from datetime import datetime, timedelta
+from zoneinfo import ZoneInfo
 
-DATABASE_URL = os.environ.get("DATABASE_URL")  # PostgreSQL URL, например: postgres://user:pass@host:port/db
+from sqlalchemy import create_engine, Column, Integer, String, DateTime
+from sqlalchemy.ext.declarative import declarative_base
+from sqlalchemy.orm import sessionmaker
+
+logger = logging.getLogger(__name__)
+logger.setLevel(logging.INFO)
+
+DATABASE_URL = os.environ.get("DATABASE_URL")
+if not DATABASE_URL:
+    raise Exception("DATABASE_URL environment variable is not set!")
 
 Base = declarative_base()
 engine = create_engine(DATABASE_URL, echo=False, future=True)
-SessionLocal = sessionmaker(bind=engine, expire_on_commit=False)
+SessionLocal = sessionmaker(bind=engine)
 
 class Note(Base):
     __tablename__ = "notes"
 
     id = Column(Integer, primary_key=True, index=True)
-    user_id = Column(Integer, nullable=True)
-    text = Column(Text, nullable=False)
+    user_id = Column(Integer, nullable=True)  # None для каналов
+    text = Column(String, nullable=False)
     hashtags = Column(String, nullable=True)
     reminder_date = Column(DateTime(timezone=True), nullable=True)
 
 def initialize_db():
     Base.metadata.create_all(bind=engine)
+    logger.info("Database tables created/checked.")
 
-def add_note(user_id, text, hashtags=None, reminder_date=None):
-    with SessionLocal() as session:
+def add_note(user_id, text, hashtags, reminder_date=None):
+    session = SessionLocal()
+    try:
         note = Note(
             user_id=user_id,
             text=text,
@@ -33,53 +42,58 @@ def add_note(user_id, text, hashtags=None, reminder_date=None):
         )
         session.add(note)
         session.commit()
-        session.refresh(note)
-        return note
+        logger.info(f"Note saved: {text}, reminder={reminder_date}")
+    except Exception as e:
+        logger.error(f"Error adding note: {e}")
+        session.rollback()
+    finally:
+        session.close()
 
 def find_notes_by_user_and_hashtag(user_id, hashtag):
-    with SessionLocal() as session:
+    session = SessionLocal()
+    try:
         notes = session.query(Note).filter(
             Note.user_id == user_id,
-            Note.hashtags.ilike(f"%{hashtag}%")
-        ).order_by(Note.id.desc()).all()
+            Note.hashtags.like(f"%{hashtag}%")
+        ).all()
         return notes
+    finally:
+        session.close()
 
 def get_all_notes_for_user(user_id):
-    with SessionLocal() as session:
-        notes = session.query(Note).filter(Note.user_id == user_id).order_by(Note.id.desc()).all()
+    session = SessionLocal()
+    try:
+        notes = session.query(Note).filter(Note.user_id == user_id).all()
         return notes
+    finally:
+        session.close()
 
 def update_note_reminder_date(note_id, new_date=None):
-    """Сбрасывает reminder_date после отправки напоминания или обновляет на new_date."""
-    with SessionLocal() as session:
-        note = session.get(Note, note_id)
+    session = SessionLocal()
+    try:
+        note = session.query(Note).filter(Note.id == note_id).first()
         if note:
             note.reminder_date = new_date
             session.commit()
+            logger.info(f"Updated reminder for note {note_id} to {new_date}")
+    except Exception as e:
+        logger.error(f"Error updating note {note_id}: {e}")
+        session.rollback()
+    finally:
+        session.close()
 
-# --- Новая функция для проверок интервала ---
-def get_upcoming_reminders_window(start: datetime, end: datetime):
-    """
-    Возвращает заметки, у которых reminder_date между start и end.
-    Оба datetime должны быть timezone-aware.
-    """
-    if start.tzinfo is None or end.tzinfo is None:
-        raise ValueError("Start и end должны быть timezone-aware datetime")
-    
-    with SessionLocal() as session:
+def get_upcoming_reminders_window(start_dt, end_dt):
+    """Возвращает напоминания в указанном временном окне (datetime aware)"""
+    session = SessionLocal()
+    try:
+        tz_str = os.environ.get("TIMEZONE", "Europe/Moscow")
+        start_dt = start_dt.replace(tzinfo=ZoneInfo(tz_str))
+        end_dt = end_dt.replace(tzinfo=ZoneInfo(tz_str))
+
         notes = session.query(Note).filter(
-            Note.reminder_date != None,
-            Note.reminder_date >= start,
-            Note.reminder_date <= end
-        ).order_by(Note.reminder_date).all()
+            Note.reminder_date >= start_dt,
+            Note.reminder_date <= end_dt
+        ).all()
         return notes
-
-# --- Для совместимости старого кода: get_upcoming_reminders ---
-def get_upcoming_reminders(hours_before=24, tz_str="Europe/Moscow"):
-    """
-    Возвращает заметки, у которых reminder_date в ближайшие hours_before часов.
-    Для простого использования в командах /upcoming_notes.
-    """
-    now = datetime.now(tz=ZoneInfo(tz_str))
-    end = now + timedelta(hours=hours_before)
-    return get_upcoming_reminders_window(now, end)
+    finally:
+        session.close()
