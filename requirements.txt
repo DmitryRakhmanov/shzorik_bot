@@ -3,3 +3,4 @@ APScheduler==3.10.4
 SQLAlchemy==2.0.29 # Keep this as is, as the Python version fixed the error.
 httpx==0.27.0
 psycopg2-binary==2.9.9
+python-dotenv==1.0.1
