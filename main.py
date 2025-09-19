@@ -80,6 +80,22 @@ async def handle_channel_post(update: Update, context: ContextTypes.DEFAULT_TYPE
     await update.channel_post.reply_text(reply)
     logger.info(f"Saved reminder from channel: {note.text}")
 
+# Команда /start
+async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text("Привет! Я бот для напоминаний. Я сохраняю напоминания из канала и уведомляю о них. Используйте /upcoming для просмотра предстоящих напоминаний. Для помощи используйте /help.")
+
+# Команда /help
+async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    help_text = """
+    Доступные команды:
+    /start - Приветствие и начало работы
+    /help - Показать эту помощь
+    /upcoming - Показать предстоящие напоминания на сегодня
+
+    Бот работает с каналом: сохраняет сообщения с #напоминание и @HH:MM DD-MM-YYYY, уведомляет за сутки или раньше.
+    """
+    await update.message.reply_text(help_text)
+
 # Команда для просмотра предстоящих напоминаний (работает в приватном чате)
 async def upcoming_notes_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     now = datetime.now(ZoneInfo("Europe/Moscow"))
@@ -120,7 +136,9 @@ application = Application.builder().token(BOT_TOKEN).build()
 # Хендлер для постов в канале
 application.add_handler(MessageHandler(filters.TEXT & filters.ChatType.CHANNEL, handle_channel_post))
 
-# Команда (ограничена приватными чатами)
+# Команды (ограничены приватными чатами)
+application.add_handler(CommandHandler("start", start_command, filters=filters.ChatType.PRIVATE))
+application.add_handler(CommandHandler("help", help_command, filters=filters.ChatType.PRIVATE))
 application.add_handler(CommandHandler("upcoming", upcoming_notes_command, filters=filters.ChatType.PRIVATE))
 
 # Настройка APScheduler
