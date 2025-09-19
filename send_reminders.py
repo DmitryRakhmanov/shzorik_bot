@@ -1,11 +1,13 @@
+```python
 # send_reminders.py
 import os
 import logging
 import datetime
+from datetime import timezone
 from zoneinfo import ZoneInfo
 
 from telegram import Bot
-from database import get_upcoming_reminders_window, update_note_reminder_date
+from database import get_upcoming_reminders_window, mark_reminder_sent
 
 # Логирование
 LOG_LEVEL = os.environ.get('LOG_LEVEL', 'INFO')
@@ -13,11 +15,11 @@ logging.basicConfig(level=LOG_LEVEL)
 logger = logging.getLogger(__name__)
 
 # Параметры из окружения
-BOT_TOKEN = os.environ.get('TELEGRAM_BOT_TOKEN')
+BOT_TOKEN = os.environ.get('TELEGRAM_TOKEN')
 CHANNEL_ID_RAW = os.environ.get('TELEGRAM_CHANNEL_ID')  # '-100...' или '@channelusername'
 
 if not BOT_TOKEN:
-    logger.error("TELEGRAM_BOT_TOKEN environment variable is not set")
+    logger.error("TELEGRAM_TOKEN environment variable is not set")
     raise SystemExit(1)
 if not CHANNEL_ID_RAW:
     logger.error("TELEGRAM_CHANNEL_ID environment variable is not set")
@@ -26,8 +28,9 @@ if not CHANNEL_ID_RAW:
 bot = Bot(BOT_TOKEN)
 
 # Таймзоны
-tz_name = os.environ.get('TIMEZONE', 'Europe/Moscow')  # по умолчанию Europe/Moscow (UTC+3)
+tz_name = os.environ.get('TZ', 'Europe/Moscow')  # по умолчанию Europe/Moscow (UTC+3)
 DISPLAY_TZ = ZoneInfo(tz_name)  # для показа времени пользователю
+UTC = timezone.utc
 
 def parse_channel_id(raw: str):
     """
@@ -75,9 +78,9 @@ def main():
             logger.info("Sending reminder for note id=%s: %s", note.id, text)
             bot.send_message(chat_id=channel_id, text=text)
             # Помечаем как отправленное
-            ok = update_note_reminder_date(note.id)
+            ok = mark_reminder_sent(note.id)
             if ok:
-                logger.info("Marked note id=%s as sent (reminder_date cleared).", note.id)
+                logger.info("Marked note id=%s as sent.", note.id)
             else:
                 logger.warning("Could not mark note id=%s as sent (note not found).", note.id)
         except Exception as ex:
@@ -85,3 +88,4 @@ def main():
 
 if __name__ == '__main__':
     main()
+```
