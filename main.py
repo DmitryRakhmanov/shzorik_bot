@@ -105,8 +105,8 @@ if __name__ == "__main__":
         application.run_webhook(
             listen="0.0.0.0",
             port=WEBHOOK_PORT,
-            url_path="/", # Убрал WEBHOOK_SECRET из этого параметра
-            webhook_url=WEBHOOK_URL
+            url_path=f"/telegram/{WEBHOOK_SECRET}",
+            webhook_url=WEBHOOK_URL + WEBHOOK_SECRET
         )
     else:
         logger.info("Starting bot with polling...")
