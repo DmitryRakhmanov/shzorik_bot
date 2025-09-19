@@ -1,36 +1,43 @@
-from sqlalchemy import create_engine, Column, Integer, BigInteger, Text, Boolean, DateTime
-from sqlalchemy.orm import declarative_base, sessionmaker
-from sqlalchemy.exc import SQLAlchemyError
-from datetime import datetime, timezone
+import os
+from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
+from sqlalchemy import (
+    create_engine, Column, Integer, String, DateTime, Boolean, select
+)
+from sqlalchemy.orm import sessionmaker, declarative_base
+from dotenv import load_dotenv
 
-# Настройка базы данных
-DATABASE_URL = os.environ.get("DATABASE_URL")
+# Загружаем переменные окружения из .env
+load_dotenv()
 
-engine = create_engine(DATABASE_URL)
-SessionLocal = sessionmaker(bind=engine)
+# Получаем DATABASE_URL из env
+DATABASE_URL = os.getenv("DATABASE_URL")
+if not DATABASE_URL:
+    raise ValueError("DATABASE_URL не задана в переменных окружения!")
 
+# Создаем движок и сессию
+engine = create_engine(DATABASE_URL, echo=False, future=True)
+SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 Base = declarative_base()
 
-# Модель Notes
+# Модель заметки
 class Note(Base):
     __tablename__ = "notes"
 
     id = Column(Integer, primary_key=True, index=True)
-    user_id = Column(BigInteger, nullable=False)
-    text = Column(Text, nullable=False)
-    hashtags = Column(Text)
-    reminder_date = Column(DateTime(timezone=True))
+    user_id = Column(Integer, nullable=False)
+    text = Column(String, nullable=False)
+    hashtags = Column(String)
+    reminder_date = Column(DateTime, nullable=True)
     reminder_sent = Column(Boolean, default=False)
-    created_at = Column(DateTime(timezone=True), default=lambda: datetime.now(tz=ZoneInfo("Europe/Moscow")))
+    created_at = Column(DateTime, default=datetime.utcnow)
 
-# Инициализация базы
+# Инициализация базы данных (создает таблицы, если их нет)
 def init_db():
     Base.metadata.create_all(bind=engine)
-    print("Database initialized.")
 
-# Добавление заметки
-def add_note(user_id: int, text: str, hashtags: str = None, reminder_date: datetime = None) -> Note:
+# Функция добавления заметки
+def add_note(user_id: int, text: str, hashtags: str = "", reminder_date: datetime = None):
     session = SessionLocal()
     try:
         note = Note(
@@ -38,36 +45,29 @@ def add_note(user_id: int, text: str, hashtags: str = None, reminder_date: datet
             text=text,
             hashtags=hashtags,
             reminder_date=reminder_date,
-            reminder_sent=False
+            reminder_sent=False,
+            created_at=datetime.now(ZoneInfo("Europe/Moscow"))
         )
         session.add(note)
         session.commit()
         session.refresh(note)
-        print(f"Saved reminder for user {user_id} at {reminder_date}")
         return note
-    except SQLAlchemyError as e:
-        session.rollback()
-        print("Error adding note:", e)
-        raise
     finally:
         session.close()
 
-# Получение предстоящих напоминаний
+# Получение напоминаний в заданном окне времени
 def get_upcoming_reminders_window(start: datetime, end: datetime, only_unsent=True):
     session = SessionLocal()
     try:
-        tz = ZoneInfo("Europe/Moscow")
-        start = start.astimezone(tz)
-        end = end.astimezone(tz)
-
-        query = session.query(Note).filter(Note.reminder_date != None).filter(
+        stmt = select(Note).where(
+            Note.reminder_date.isnot(None),
             Note.reminder_date >= start,
             Note.reminder_date <= end
         )
         if only_unsent:
-            query = query.filter(Note.reminder_sent == False)
-
-        return query.order_by(Note.reminder_date).all()
+            stmt = stmt.where(Note.reminder_sent == False)
+        stmt = stmt.order_by(Note.reminder_date)
+        return session.execute(stmt).scalars().all()
     finally:
         session.close()
 
@@ -75,10 +75,9 @@ def get_upcoming_reminders_window(start: datetime, end: datetime, only_unsent=Tr
 def mark_reminder_sent(note_id: int):
     session = SessionLocal()
     try:
-        note = session.query(Note).get(note_id)
+        note = session.get(Note, note_id)
         if note:
             note.reminder_sent = True
             session.commit()
-            print(f"Marked reminder {note_id} as sent.")
     finally:
         session.close()
