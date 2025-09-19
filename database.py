@@ -1,45 +1,42 @@
 import os
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
-from sqlalchemy import (
-    create_engine, Column, Integer, String, DateTime, Boolean, select
-)
+from sqlalchemy import create_engine, Column, Integer, String, DateTime, Boolean, select
 from sqlalchemy.orm import sessionmaker, declarative_base
 from dotenv import load_dotenv
 
 # Загружаем переменные окружения из .env
 load_dotenv()
 
-# Получаем DATABASE_URL из env
-DATABASE_URL = os.getenv("DATABASE_URL")
+# Получаем URL базы данных из переменной окружения
+DATABASE_URL = os.environ.get("DATABASE_URL")
 if not DATABASE_URL:
-    raise ValueError("DATABASE_URL не задана в переменных окружения!")
+    raise ValueError("DATABASE_URL не задан в .env файле")
 
-# Создаем движок и сессию
-engine = create_engine(DATABASE_URL, echo=False, future=True)
+# Создаем движок и сессию SQLAlchemy
+engine = create_engine(DATABASE_URL)
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 Base = declarative_base()
 
-# Модель заметки
+# Модель Notes
 class Note(Base):
     __tablename__ = "notes"
 
     id = Column(Integer, primary_key=True, index=True)
     user_id = Column(Integer, nullable=False)
     text = Column(String, nullable=False)
-    hashtags = Column(String)
+    hashtags = Column(String, nullable=True)
     reminder_date = Column(DateTime, nullable=True)
     reminder_sent = Column(Boolean, default=False)
-    created_at = Column(DateTime, default=datetime.utcnow)
+    created_at = Column(DateTime, default=datetime.now)
 
-# Инициализация базы данных (создает таблицы, если их нет)
+# Инициализация базы данных (создание таблиц, если их нет)
 def init_db():
     Base.metadata.create_all(bind=engine)
 
-# Функция добавления заметки
-def add_note(user_id: int, text: str, hashtags: str = "", reminder_date: datetime = None):
-    session = SessionLocal()
-    try:
+# Добавление заметки
+def add_note(user_id: int, text: str, hashtags: str, reminder_date: datetime | None):
+    with SessionLocal() as session:
         note = Note(
             user_id=user_id,
             text=text,
@@ -52,32 +49,26 @@ def add_note(user_id: int, text: str, hashtags: str = "", reminder_date: datetim
         session.commit()
         session.refresh(note)
         return note
-    finally:
-        session.close()
 
-# Получение напоминаний в заданном окне времени
-def get_upcoming_reminders_window(start: datetime, end: datetime, only_unsent=True):
-    session = SessionLocal()
-    try:
+# Получение предстоящих напоминаний в окне времени
+def get_upcoming_reminders_window(start_time: datetime, end_time: datetime, only_unsent: bool = True):
+    with SessionLocal() as session:
         stmt = select(Note).where(
             Note.reminder_date.isnot(None),
-            Note.reminder_date >= start,
-            Note.reminder_date <= end
+            Note.reminder_date >= start_time,
+            Note.reminder_date <= end_time
         )
         if only_unsent:
             stmt = stmt.where(Note.reminder_sent == False)
         stmt = stmt.order_by(Note.reminder_date)
         return session.execute(stmt).scalars().all()
-    finally:
-        session.close()
 
 # Отметить напоминание как отправленное
 def mark_reminder_sent(note_id: int):
-    session = SessionLocal()
-    try:
+    with SessionLocal() as session:
         note = session.get(Note, note_id)
         if note:
             note.reminder_sent = True
             session.commit()
-    finally:
-        session.close()
+            return True
+        return False
