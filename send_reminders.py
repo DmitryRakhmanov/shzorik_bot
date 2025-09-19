@@ -1,4 +1,3 @@
-
 # send_reminders.py
 import os
 import logging
@@ -10,26 +9,31 @@ from telegram import Bot
 from database import get_upcoming_reminders_window, mark_reminder_sent
 
 # Логирование
-LOG_LEVEL = os.environ.get('LOG_LEVEL', 'INFO')
+LOG_LEVEL = os.environ.get('LOG_LEVEL', 'INFO').upper()
 logging.basicConfig(level=LOG_LEVEL)
 logger = logging.getLogger(__name__)
 
-# Параметры из окружения
+# Переменные окружения
 BOT_TOKEN = os.environ.get('TELEGRAM_TOKEN')
-CHANNEL_ID_RAW = os.environ.get('TELEGRAM_CHANNEL_ID')  # '-100...' или '@channelusername'
+CHANNEL_ID_RAW = os.environ.get('TELEGRAM_CHANNEL_ID')
+DATABASE_URL = os.environ.get('DATABASE_URL')
+TZ_NAME = os.environ.get('TZ', 'Europe/Moscow')
 
+# Проверка обязательных переменных
+missing_vars = []
 if not BOT_TOKEN:
-    logger.error("TELEGRAM_TOKEN environment variable is not set")
-    raise SystemExit(1)
+    missing_vars.append('TELEGRAM_TOKEN')
 if not CHANNEL_ID_RAW:
-    logger.error("TELEGRAM_CHANNEL_ID environment variable is not set")
+    missing_vars.append('TELEGRAM_CHANNEL_ID')
+if not DATABASE_URL:
+    missing_vars.append('DATABASE_URL')
+
+if missing_vars:
+    logger.error("Отсутствуют обязательные переменные окружения: %s", ', '.join(missing_vars))
     raise SystemExit(1)
 
 bot = Bot(BOT_TOKEN)
-
-# Таймзоны
-tz_name = os.environ.get('TZ', 'Europe/Moscow')  # по умолчанию Europe/Moscow (UTC+3)
-DISPLAY_TZ = ZoneInfo(tz_name)  # для показа времени пользователю
+DISPLAY_TZ = ZoneInfo(TZ_NAME)
 UTC = timezone.utc
 
 def parse_channel_id(raw: str):
@@ -56,17 +60,19 @@ def to_display_time(dt_utc):
     return dt_local.strftime('%H:%M %d-%m-%Y')
 
 def main():
-    # окно проверки: сейчас (UTC) .. +24 часа
     now_utc = datetime.datetime.now(tz=UTC)
     upper_utc = now_utc + datetime.timedelta(hours=24)
 
-    logger.info("Checking reminders in window: %s -> %s", now_utc.isoformat(), upper_utc.isoformat())
+    logger.info("Проверка напоминаний в окне: %s -> %s", now_utc.isoformat(), upper_utc.isoformat())
 
-    # Получаем заметки из database.get_upcoming_reminders_window
-    reminders = get_upcoming_reminders_window(now_utc, upper_utc)
+    try:
+        reminders = get_upcoming_reminders_window(now_utc, upper_utc)
+    except Exception as e:
+        logger.exception("Ошибка при получении напоминаний: %s", e)
+        return
 
     if not reminders:
-        logger.info("No reminders found in the next 24 hours.")
+        logger.info("Напоминаний на следующие 24 часа не найдено.")
         return
 
     channel_id = parse_channel_id(CHANNEL_ID_RAW)
@@ -75,16 +81,16 @@ def main():
         try:
             display_time = to_display_time(note.reminder_date)
             text = f"🔔 Напоминание: '{note.text}' назначено на {display_time}."
-            logger.info("Sending reminder for note id=%s: %s", note.id, text)
+            logger.info("Отправка напоминания для note id=%s: %s", note.id, text)
             bot.send_message(chat_id=channel_id, text=text)
-            # Помечаем как отправленное
+            # Пометка как отправленного
             ok = mark_reminder_sent(note.id)
             if ok:
-                logger.info("Marked note id=%s as sent.", note.id)
+                logger.info("Напоминание note id=%s отмечено как отправленное.", note.id)
             else:
-                logger.warning("Could not mark note id=%s as sent (note not found).", note.id)
+                logger.warning("Не удалось отметить note id=%s как отправленное (не найдено).", note.id)
         except Exception as ex:
-            logger.exception("Failed to send reminder for note id=%s: %s", getattr(note, 'id', '<unknown>'), ex)
+            logger.exception("Ошибка при отправке напоминания note id=%s: %s", getattr(note, 'id', '<unknown>'), ex)
 
 if __name__ == '__main__':
     main()
