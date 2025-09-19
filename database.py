@@ -1,143 +1,82 @@
-# database.py
 import os
-import datetime
+from datetime import datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
-from sqlalchemy import create_engine, Column, Integer, String, Text, DateTime
-from sqlalchemy.orm import sessionmaker, declarative_base
 
-# Получите DATABASE_URL из переменных окружения
-DATABASE_URL = os.environ.get('DATABASE_URL')
-if not DATABASE_URL:
-    raise Exception("DATABASE_URL environment variable is not set!")
-
-# Настройка движка SQLAlchemy
-engine = create_engine(
-    DATABASE_URL,
-    pool_size=10,
-    max_overflow=5,
-    pool_recycle=300,
-    pool_pre_ping=True,
-    echo=False,
+from sqlalchemy import (
+    create_engine, Column, Integer, String, DateTime, Text, select, func
 )
+from sqlalchemy.orm import declarative_base, sessionmaker
 
+# --- Настройка базы данных ---
+DATABASE_URL = os.environ.get("DATABASE_URL", "sqlite:///notes.db")  # для локального теста
+engine = create_engine(DATABASE_URL, echo=False, future=True)
+SessionLocal = sessionmaker(bind=engine, autoflush=False, future=True)
 Base = declarative_base()
 
+# --- Модель заметки ---
 class Note(Base):
-    __tablename__ = 'notes'
+    __tablename__ = "notes"
 
-    id = Column(Integer, primary_key=True)
-    user_id = Column(Integer, nullable=True)
+    id = Column(Integer, primary_key=True, index=True)
+    user_id = Column(Integer, nullable=True)  # None для каналов
     text = Column(Text, nullable=False)
-    hashtags = Column(String)
-    # Храним timezone-aware datetime в UTC
-    reminder_date = Column(DateTime(timezone=True))
+    hashtags = Column(String, nullable=True)
+    reminder_date = Column(DateTime(timezone=True), nullable=True)
 
-    def __repr__(self):
-        return f"<Note(id={self.id}, user_id={self.user_id}, text='{self.text[:20]}...')>"
-
-SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
-
-# Таймзоны
-LOCAL_TZ = ZoneInfo('Europe/Amsterdam')
-UTC = ZoneInfo('UTC')
-
+# --- Инициализация базы данных ---
 def initialize_db():
-    """Создаёт таблицы (если ещё нет)."""
     Base.metadata.create_all(bind=engine)
 
-# --- CRUD функции ---
-
-def add_note(user_id: int, text: str, hashtags: str = None, reminder_date: datetime.datetime = None):
-    """
-    Добавляет заметку. Если reminder_date не-таймзонный (naive),
-    считается, что это время в Europe/Amsterdam и переводится в UTC перед сохранением.
-    """
-    session = SessionLocal()
-    try:
-        if reminder_date is not None:
-            if reminder_date.tzinfo is None:
-                # считаем, что naive время — в локальной TZ (Europe/Amsterdam)
-                reminder_date = reminder_date.replace(tzinfo=LOCAL_TZ)
-            # конвертируем в UTC для хранения
-            reminder_date = reminder_date.astimezone(UTC)
-
-        new_note = Note(user_id=user_id, text=text, hashtags=hashtags, reminder_date=reminder_date)
-        session.add(new_note)
+# --- CRUD операции ---
+def add_note(user_id, text, hashtags=None, reminder_date=None, tz_str="Europe/Moscow"):
+    """Добавляем заметку с timezone-aware datetime."""
+    if reminder_date:
+        if reminder_date.tzinfo is None:
+            tz = ZoneInfo(tz_str)
+            reminder_date = reminder_date.replace(tzinfo=tz)
+    note = Note(user_id=user_id, text=text, hashtags=hashtags, reminder_date=reminder_date)
+    with SessionLocal() as session:
+        session.add(note)
         session.commit()
-        session.refresh(new_note)
-        return new_note
-    except Exception:
-        session.rollback()
-        raise
-    finally:
-        session.close()
 
-def update_note_reminder_date(note_id: int):
-    """
-    Устанавливает reminder_date = NULL (None) у заметки по id.
-    Возвращает True если обновлено, False если заметка не найдена.
-    """
-    session = SessionLocal()
-    try:
-        note = session.query(Note).filter(Note.id == note_id).first()
+def find_notes_by_user_and_hashtag(user_id, hashtag):
+    with SessionLocal() as session:
+        stmt = select(Note).where(
+            Note.user_id == user_id,
+            Note.hashtags.ilike(f"%{hashtag}%")
+        ).order_by(Note.id.desc())
+        return session.scalars(stmt).all()
+
+def get_all_notes_for_user(user_id):
+    with SessionLocal() as session:
+        stmt = select(Note).where(Note.user_id == user_id).order_by(Note.id.desc())
+        return session.scalars(stmt).all()
+
+def update_note_reminder_date(note_id, new_date=None):
+    """Сбрасываем или обновляем дату напоминания."""
+    with SessionLocal() as session:
+        note = session.get(Note, note_id)
         if note:
-            note.reminder_date = None
+            note.reminder_date = new_date
             session.commit()
-            return True
-        return False
-    except Exception:
-        session.rollback()
-        raise
-    finally:
-        session.close()
 
-def find_notes_by_user_and_hashtag(user_id: int, hashtag: str):
+# --- Новая функция для получения предстоящих напоминаний ---
+def get_upcoming_reminders_window(hours_before=24, tz_str="Europe/Moscow"):
     """
-    Находит заметки для пользователя или из канала (user_id IS NULL), где hashtags содержит hashtag.
-    Регистр игнорируется (ILIKE для Postgres).
+    Возвращает список заметок, у которых reminder_date в пределах
+    следующих hours_before часов от текущего времени.
     """
-    session = SessionLocal()
-    try:
-        notes = session.query(Note).filter(
-            (Note.user_id == user_id) | (Note.user_id.is_(None)),
-            Note.hashtags.ilike(f'%{hashtag}%')
-        ).all()
-        return notes
-    finally:
-        session.close()
-
-def get_upcoming_reminders_window(window_start: datetime.datetime, window_end: datetime.datetime):
-    """
-    Возвращает список Note с reminder_date в диапазоне [window_start, window_end].
-    Ожидает timezone-aware datetime или naive (будет приведён к UTC).
-    Возвращаемые объекты ORM — годны для чтения; для обновления используйте update_note_reminder_date().
-    """
-    session = SessionLocal()
-    try:
-        # Нормализуем границы: приводим к UTC и делаем aware, если нужно
-        if window_start.tzinfo is None:
-            window_start = window_start.replace(tzinfo=UTC)
-        else:
-            window_start = window_start.astimezone(UTC)
-
-        if window_end.tzinfo is None:
-            window_end = window_end.replace(tzinfo=UTC)
-        else:
-            window_end = window_end.astimezone(UTC)
-
-        reminders = session.query(Note).filter(
-            Note.reminder_date.isnot(None),
-            Note.reminder_date >= window_start,
+    now = datetime.now(tz=ZoneInfo(tz_str))
+    window_end = now + timedelta(hours=hours_before)
+    with SessionLocal() as session:
+        stmt = select(Note).where(
+            Note.reminder_date != None,
+            Note.reminder_date >= now,
             Note.reminder_date <= window_end
-        ).order_by(Note.reminder_date).all()
-        return reminders
-    finally:
-        session.close()
+        ).order_by(Note.reminder_date)
+        return session.scalars(stmt).all()
 
-def get_all_notes_for_user(user_id: int):
-    session = SessionLocal()
-    try:
-        notes = session.query(Note).filter(Note.user_id == user_id).all()
-        return notes
-    finally:
-        session.close()
+# --- Привычная для main.py функция ---
+def get_upcoming_reminders():
+    """Возвращает все напоминания за следующие 24 часа (timezone-aware)."""
+    return get_upcoming_reminders_window(hours_before=24)
