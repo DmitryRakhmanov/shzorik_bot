@@ -62,7 +62,7 @@ async def handle_private_message(update: Update, context: ContextTypes.DEFAULT_T
         await update.message.reply_text("❌ Сообщение должно содержать #напоминание и время в формате @HH:MM DD-MM-YYYY.")
         return
     note = add_note(user_id, cleaned_text, " ".join(hashtags), reminder_date)
-    reply = f"✅ Напоминание сохранено: '{note.text}' на {note.reminder_date.strftime('%H:%M %d-%m-%Y')}"
+    reply = f"✅ Напоминание сохранено: '{note.text}' на {note.reminder_date.astimezone(ZoneInfo('Europe/Moscow')).strftime('%H:%M %d-%m-%Y')}"
     await update.message.reply_text(reply)
     logger.info(f"Saved reminder: {note.text}")
 
@@ -76,7 +76,7 @@ async def handle_channel_post(update: Update, context: ContextTypes.DEFAULT_TYPE
     if "#напоминание" not in hashtags or reminder_date is None:
         return  # Игнорируем недействительные посты
     note = add_note(channel_id, cleaned_text, " ".join(hashtags), reminder_date)
-    reply = f"✅ Напоминание сохранено: '{note.text}' на {note.reminder_date.strftime('%H:%M %d-%m-%Y')}"
+    reply = f"✅ Напоминание сохранено: '{note.text}' на {note.reminder_date.astimezone(ZoneInfo('Europe/Moscow')).strftime('%H:%M %d-%m-%Y')}"
     await update.channel_post.reply_text(reply)
     logger.info(f"Saved reminder from channel: {note.text}")
 
@@ -87,21 +87,24 @@ async def upcoming_notes_command(update: Update, context: ContextTypes.DEFAULT_T
     if not notes:
         await update.message.reply_text("Нет предстоящих напоминаний на сегодня.")
         return
-    messages = [
-        f"🔔 {note.text} - назначено на {note.reminder_date.strftime('%H:%M %d-%m-%Y')} (отправлено: {'да' if note.reminder_sent else 'нет'})"
-        for note in notes
-    ]
+    messages = []
+    for note in notes:
+        reminder_date_moscow = note.reminder_date.astimezone(ZoneInfo("Europe/Moscow"))
+        messages.append(
+            f"🔔 {note.text} - назначено на {reminder_date_moscow.strftime('%H:%M %d-%m-%Y')} (отправлено: {'да' if note.reminder_sent else 'нет'})"
+        )
     await update.message.reply_text("\n".join(messages))
 
 # Проверка напоминаний и отправка (в канал или пользователю, в зависимости от note.user_id)
 async def check_reminders():
     now = datetime.now(ZoneInfo("Europe/Moscow"))
-    upcoming = get_upcoming_reminders_window(now, now + timedelta(minutes=5))
+    upcoming = get_upcoming_reminders_window(now, now + timedelta(days=1))
     for note in upcoming:
         try:
+            reminder_date_moscow = note.reminder_date.astimezone(ZoneInfo("Europe/Moscow"))
             await application.bot.send_message(
                 chat_id=note.user_id,
-                text=f"🔔 Напоминание: '{note.text}' назначено на {note.reminder_date.strftime('%H:%M %d-%m-%Y')}"
+                text=f"🔔 Напоминание: '{note.text}' назначено на {reminder_date_moscow.strftime('%H:%M %d-%m-%Y')}"
             )
             mark_reminder_sent(note.id)
             logger.info(f"Sent reminder: {note.text}")
