@@ -24,7 +24,7 @@ BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
 DATABASE_URL = os.environ.get("DATABASE_URL")
 WEBHOOK_URL = os.environ.get("WEBHOOK_URL")
 WEBHOOK_SECRET = os.environ.get("WEBHOOK_SECRET_TOKEN")
-WEBHOOK_PORT = int(os.environ.get("PORT", 8000))
+WEBHOOK_PORT = int(os.environ.get("PORT", 10000))
 USE_WEBHOOK = os.environ.get("USE_WEBHOOK", 'false').lower() in ('true', '1', 't')
 
 if not BOT_TOKEN:
