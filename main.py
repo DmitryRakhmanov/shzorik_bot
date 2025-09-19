@@ -99,7 +99,7 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # Команда для просмотра предстоящих напоминаний (работает в приватном чате)
 async def upcoming_notes_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     now = datetime.now(ZoneInfo("Europe/Moscow"))
-    notes = get_upcoming_reminders_window(now, now + timedelta(days=1), only_unsent=False)
+    notes = get_upcoming_reminders_window(now, now + timedelta(days=30), only_unsent=False)
     if not notes:
         await update.message.reply_text("Нет предстоящих напоминаний на сегодня.")
         return
