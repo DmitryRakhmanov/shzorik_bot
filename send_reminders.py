@@ -14,7 +14,7 @@ logging.basicConfig(level=LOG_LEVEL)
 logger = logging.getLogger(__name__)
 
 # Переменные окружения
-BOT_TOKEN = os.environ.get('TELEGRAM_TOKEN')
+BOT_TOKEN = os.environ.get('TELEGRAM_BOT_TOKEN')
 CHANNEL_ID_RAW = os.environ.get('TELEGRAM_CHANNEL_ID')
 DATABASE_URL = os.environ.get('DATABASE_URL')
 TZ_NAME = os.environ.get('TZ', 'Europe/Moscow')
@@ -22,7 +22,7 @@ TZ_NAME = os.environ.get('TZ', 'Europe/Moscow')
 # Проверка обязательных переменных
 missing_vars = []
 if not BOT_TOKEN:
-    missing_vars.append('TELEGRAM_TOKEN')
+    missing_vars.append('TELEGRAM_BOT_TOKEN')
 if not CHANNEL_ID_RAW:
     missing_vars.append('TELEGRAM_CHANNEL_ID')
 if not DATABASE_URL:
