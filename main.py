@@ -105,8 +105,8 @@ if __name__ == "__main__":
         application.run_webhook(
             listen="0.0.0.0",
             port=WEBHOOK_PORT,
-            url_path=f"/{WEBHOOK_SECRET}",  # Исправлено: теперь путь начинается со слэша
-            webhook_url=WEBHOOK_URL + WEBHOOK_SECRET
+            url_path="/", # Убрал WEBHOOK_SECRET из этого параметра
+            webhook_url=WEBHOOK_URL
         )
     else:
         logger.info("Starting bot with polling...")
