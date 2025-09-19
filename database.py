@@ -7,7 +7,7 @@ from telegram import Update
 from telegram.ext import Application, CommandHandler, ContextTypes, MessageHandler, filters
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from dotenv import load_dotenv
-from database import init_db, add_note, get_upcoming_reminders_window, mark_reminder_sent
+#from database import init_db, add_note, get_upcoming_reminders_window, mark_reminder_sent
 
 # Настройка логирования
 logging.basicConfig(
