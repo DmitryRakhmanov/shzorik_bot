@@ -1,94 +1,84 @@
-import os
-from datetime import datetime, timedelta
-from zoneinfo import ZoneInfo
-from sqlalchemy import create_engine, Column, Integer, String, DateTime, Boolean, select, update
+from sqlalchemy import create_engine, Column, Integer, BigInteger, Text, Boolean, DateTime
 from sqlalchemy.orm import declarative_base, sessionmaker
+from sqlalchemy.exc import SQLAlchemyError
+from datetime import datetime, timezone
+from zoneinfo import ZoneInfo
 
-DATABASE_URL = os.environ.get("DATABASE_URL")
-TIMEZONE = os.environ.get("TIMEZONE", "Europe/Moscow")
+# Настройка базы данных
+DATABASE_URL = "postgresql://username:password@hostname:port/dbname"  # Замени на свои данные
+
+engine = create_engine(DATABASE_URL)
+SessionLocal = sessionmaker(bind=engine)
 
 Base = declarative_base()
-engine = create_engine(DATABASE_URL, echo=False, future=True)
-SessionLocal = sessionmaker(bind=engine, autoflush=False, future=True)
 
-
+# Модель Notes
 class Note(Base):
     __tablename__ = "notes"
-    id = Column(Integer, primary_key=True)
-    user_id = Column(Integer, nullable=True)
-    text = Column(String, nullable=False)
-    hashtags = Column(String, nullable=True)
-    reminder_date = Column(DateTime(timezone=True), nullable=True)
+
+    id = Column(Integer, primary_key=True, index=True)
+    user_id = Column(BigInteger, nullable=False)
+    text = Column(Text, nullable=False)
+    hashtags = Column(Text)
+    reminder_date = Column(DateTime(timezone=True))
     reminder_sent = Column(Boolean, default=False)
-    created_at = Column(DateTime(timezone=True), default=lambda: datetime.now(ZoneInfo(TIMEZONE)))
+    created_at = Column(DateTime(timezone=True), default=lambda: datetime.now(tz=ZoneInfo("Europe/Moscow")))
 
-
-def initialize_db():
+# Инициализация базы
+def init_db():
     Base.metadata.create_all(bind=engine)
+    print("Database initialized.")
 
-
-def add_note(user_id, text, hashtags=None, reminder_date=None):
-    with SessionLocal() as session:
-        if reminder_date and reminder_date.tzinfo is None:
-            reminder_date = reminder_date.replace(tzinfo=ZoneInfo(TIMEZONE))
-        note = Note(user_id=user_id, text=text, hashtags=hashtags, reminder_date=reminder_date)
+# Добавление заметки
+def add_note(user_id: int, text: str, hashtags: str = None, reminder_date: datetime = None) -> Note:
+    session = SessionLocal()
+    try:
+        note = Note(
+            user_id=user_id,
+            text=text,
+            hashtags=hashtags,
+            reminder_date=reminder_date,
+            reminder_sent=False
+        )
         session.add(note)
         session.commit()
         session.refresh(note)
+        print(f"Saved reminder for user {user_id} at {reminder_date}")
         return note
+    except SQLAlchemyError as e:
+        session.rollback()
+        print("Error adding note:", e)
+        raise
+    finally:
+        session.close()
 
+# Получение предстоящих напоминаний
+def get_upcoming_reminders_window(start: datetime, end: datetime, only_unsent=True):
+    session = SessionLocal()
+    try:
+        tz = ZoneInfo("Europe/Moscow")
+        start = start.astimezone(tz)
+        end = end.astimezone(tz)
 
-def find_notes_by_user_and_hashtag(user_id, hashtag):
-    with SessionLocal() as session:
-        stmt = select(Note).where(Note.user_id == user_id, Note.hashtags.like(f"%{hashtag}%"))
-        return session.execute(stmt).scalars().all()
-
-
-def get_all_notes_for_user(user_id):
-    with SessionLocal() as session:
-        stmt = select(Note).where(Note.user_id == user_id).order_by(Note.created_at.desc())
-        return session.execute(stmt).scalars().all()
-
-
-def update_note_reminder_date(note_id, new_reminder_date=None, sent=False):
-    with SessionLocal() as session:
-        stmt = update(Note).where(Note.id == note_id)
-        values = {}
-        if new_reminder_date:
-            values["reminder_date"] = new_reminder_date
-        if sent:
-            values["reminder_sent"] = True
-        stmt = stmt.values(**values)
-        session.execute(stmt)
-        session.commit()
-
-
-def get_upcoming_reminders_window(start_dt, end_dt, only_unsent=True):
-    tz = ZoneInfo(TIMEZONE)
-    if start_dt.tzinfo is None:
-        start_dt = start_dt.replace(tzinfo=tz)
-    if end_dt.tzinfo is None:
-        end_dt = end_dt.replace(tzinfo=tz)
-
-    with SessionLocal() as session:
-        stmt = select(Note).where(
-            Note.reminder_date != None,
-            Note.reminder_date >= start_dt,
-            Note.reminder_date <= end_dt
+        query = session.query(Note).filter(Note.reminder_date != None).filter(
+            Note.reminder_date >= start,
+            Note.reminder_date <= end
         )
         if only_unsent:
-            stmt = stmt.where(Note.reminder_sent == False)
-        stmt = stmt.order_by(Note.reminder_date)
-        return session.execute(stmt).scalars().all()
+            query = query.filter(Note.reminder_sent == False)
 
+        return query.order_by(Note.reminder_date).all()
+    finally:
+        session.close()
 
-def get_past_unsent_reminders():
-    """Вернуть напоминания, которые должны были быть отправлены, но reminder_sent=False"""
-    now = datetime.now(ZoneInfo(TIMEZONE))
-    with SessionLocal() as session:
-        stmt = select(Note).where(
-            Note.reminder_date != None,
-            Note.reminder_date <= now,
-            Note.reminder_sent == False
-        ).order_by(Note.reminder_date)
-        return session.execute(stmt).scalars().all()
+# Отметить напоминание как отправленное
+def mark_reminder_sent(note_id: int):
+    session = SessionLocal()
+    try:
+        note = session.query(Note).get(note_id)
+        if note:
+            note.reminder_sent = True
+            session.commit()
+            print(f"Marked reminder {note_id} as sent.")
+    finally:
+        session.close()
