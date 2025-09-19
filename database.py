@@ -1,5 +1,5 @@
 import os
-from datetime import datetime, timedelta
+from datetime import datetime
 from zoneinfo import ZoneInfo
 from sqlalchemy import create_engine, Column, Integer, String, DateTime, Boolean, select
 from sqlalchemy.orm import sessionmaker, declarative_base
@@ -26,11 +26,11 @@ class Note(Base):
     user_id = Column(Integer, nullable=False)
     text = Column(String, nullable=False)
     hashtags = Column(String, nullable=True)
-    reminder_date = Column(DateTime, nullable=True)
+    reminder_date = Column(DateTime(timezone=True), nullable=True)
     reminder_sent = Column(Boolean, default=False)
-    created_at = Column(DateTime, default=datetime.now)
+    created_at = Column(DateTime(timezone=True), default=lambda: datetime.now(ZoneInfo("Europe/Moscow")))
 
-# Инициализация базы данных (создание таблиц, если их нет)
+# Инициализация базы данных
 def init_db():
     Base.metadata.create_all(bind=engine)
 
@@ -43,8 +43,7 @@ def add_note(user_id: int, text: str, hashtags: str, reminder_date: datetime | N
             hashtags=hashtags,
             reminder_date=reminder_date,
             reminder_sent=False,
-            created_at=datetime.now(ZoneInfo("Europe/Moscow"))
-        )
+        )  # created_at устанавливается по default
         session.add(note)
         session.commit()
         session.refresh(note)

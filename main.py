@@ -24,7 +24,7 @@ BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
 DATABASE_URL = os.environ.get("DATABASE_URL")
 WEBHOOK_URL = os.environ.get("WEBHOOK_URL")
 WEBHOOK_SECRET = os.environ.get("WEBHOOK_SECRET_TOKEN")
-WEBHOOK_PORT = int(os.environ.get("PORT"))
+WEBHOOK_PORT = int(os.environ.get("PORT", 10000))  # Default для локального теста
 USE_WEBHOOK = os.environ.get("USE_WEBHOOK", 'false').lower() in ('true', '1', 't')
 
 if not BOT_TOKEN:
@@ -40,22 +40,29 @@ logger.info("Database initialized.")
 
 # Парсинг напоминаний из сообщения
 def parse_reminder(text: str):
-    hashtags = re.findall(r"#\w+", text)
+    # Поддержка кириллицы в хэштегах
+    hashtags = re.findall(r"#[а-яА-ЯёЁa-zA-Z0-9_]+", text)
     dt_match = re.search(r"@(\d{2}:\d{2}) (\d{2}-\d{2}-\d{4})", text)
     reminder_date = None
     if dt_match:
         time_str, date_str = dt_match.groups()
-        reminder_date = datetime.strptime(f"{date_str} {time_str}", "%d-%m-%Y %H:%M")
-        reminder_date = reminder_date.replace(tzinfo=ZoneInfo("Europe/Moscow"))
-    return text, " ".join(hashtags), reminder_date
+        try:
+            reminder_date = datetime.strptime(f"{date_str} {time_str}", "%d-%m-%Y %H:%M")
+            reminder_date = reminder_date.replace(tzinfo=ZoneInfo("Europe/Moscow"))
+        except ValueError:
+            return text, " ".join(hashtags), None  # Если формат неверный
+    return text, hashtags, reminder_date  # Возвращаем список hashtags для проверки
 
 # Обработчик сообщений
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     text = update.message.text
-    cleaned_text, hashtags_str, reminder_date = parse_reminder(text)
-    note = add_note(user_id, cleaned_text, hashtags_str, reminder_date)
-    reply = f"✅ Напоминание сохранено: '{note.text}'"
+    cleaned_text, hashtags, reminder_date = parse_reminder(text)
+    if "#напоминание" not in hashtags or reminder_date is None:
+        await update.message.reply_text("❌ Сообщение должно содержать #напоминание и время в формате @HH:MM DD-MM-YYYY.")
+        return
+    note = add_note(user_id, cleaned_text, " ".join(hashtags), reminder_date)
+    reply = f"✅ Напоминание сохранено: '{note.text}' на {note.reminder_date.strftime('%H:%M %d-%m-%Y')}"
     await update.message.reply_text(reply)
     logger.info(f"Saved reminder: {note.text}")
 
@@ -67,7 +74,7 @@ async def upcoming_notes_command(update: Update, context: ContextTypes.DEFAULT_T
         await update.message.reply_text("Нет предстоящих напоминаний на сегодня.")
         return
     messages = [
-        f"🔔 {note.text} - назначено на {note.reminder_date.strftime('%H:%M %d-%m-%Y')}"
+        f"🔔 {note.text} - назначено на {note.reminder_date.strftime('%H:%M %d-%m-%Y')} (отправлено: {'да' if note.reminder_sent else 'нет'})"
         for note in notes
     ]
     await update.message.reply_text("\n".join(messages))
@@ -105,8 +112,9 @@ if __name__ == "__main__":
         application.run_webhook(
             listen="0.0.0.0",
             port=WEBHOOK_PORT,
-            url_path=f"/telegram/{WEBHOOK_SECRET}",
-            webhook_url=WEBHOOK_URL + WEBHOOK_SECRET
+            url_path="/telegram",
+            webhook_url=WEBHOOK_URL,
+            secret_token=WEBHOOK_SECRET
         )
     else:
         logger.info("Starting bot with polling...")
