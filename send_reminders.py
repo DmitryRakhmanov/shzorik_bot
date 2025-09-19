@@ -1,4 +1,4 @@
-```python
+
 # send_reminders.py
 import os
 import logging
@@ -88,4 +88,3 @@ def main():
 
 if __name__ == '__main__':
     main()
-```
