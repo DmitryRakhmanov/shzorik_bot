@@ -22,15 +22,15 @@ load_dotenv()
 # Получение токенов и URL из переменных окружения
 BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
 DATABASE_URL = os.environ.get("DATABASE_URL")
+TELEGRAM_CHANNEL_ID = int(os.environ.get("TELEGRAM_CHANNEL_ID", 0))  # Для справки, не обязательно
 WEBHOOK_URL = os.environ.get("WEBHOOK_URL")
 WEBHOOK_SECRET = os.environ.get("WEBHOOK_SECRET_TOKEN")
-WEBHOOK_PORT = int(os.environ.get("PORT", 10000))  # Default для локального теста
+WEBHOOK_PORT = int(os.environ.get("PORT", 10000))
 USE_WEBHOOK = os.environ.get("USE_WEBHOOK", 'false').lower() in ('true', '1', 't')
 
 if not BOT_TOKEN:
     raise ValueError("Не задан TELEGRAM_BOT_TOKEN в .env файле")
 
-# Дополнительная проверка для режима вебхуков
 if USE_WEBHOOK and not all([WEBHOOK_URL, WEBHOOK_SECRET, WEBHOOK_PORT]):
     raise ValueError("При USE_WEBHOOK=true, WEBHOOK_URL, WEBHOOK_SECRET_TOKEN и PORT должны быть заданы")
 
@@ -53,8 +53,8 @@ def parse_reminder(text: str):
             return text, " ".join(hashtags), None  # Если формат неверный
     return text, hashtags, reminder_date  # Возвращаем список hashtags для проверки
 
-# Обработчик сообщений
-async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
+# Обработчик сообщений в приватном чате (если нужно сохранять из приватных - раскомментируйте добавление хендлера ниже)
+async def handle_private_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     text = update.message.text
     cleaned_text, hashtags, reminder_date = parse_reminder(text)
@@ -66,7 +66,21 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(reply)
     logger.info(f"Saved reminder: {note.text}")
 
-# Команда для просмотра предстоящих напоминаний
+# Обработчик постов в канале
+async def handle_channel_post(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not update.channel_post:
+        return
+    text = update.channel_post.text
+    channel_id = update.channel_post.chat.id
+    cleaned_text, hashtags, reminder_date = parse_reminder(text)
+    if "#напоминание" not in hashtags or reminder_date is None:
+        return  # Игнорируем недействительные посты
+    note = add_note(channel_id, cleaned_text, " ".join(hashtags), reminder_date)
+    reply = f"✅ Напоминание сохранено: '{note.text}' на {note.reminder_date.strftime('%H:%M %d-%m-%Y')}"
+    await update.channel_post.reply_text(reply)
+    logger.info(f"Saved reminder from channel: {note.text}")
+
+# Команда для просмотра предстоящих напоминаний (работает в приватном чате)
 async def upcoming_notes_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     now = datetime.now(ZoneInfo("Europe/Moscow"))
     notes = get_upcoming_reminders_window(now, now + timedelta(days=1), only_unsent=False)
@@ -79,7 +93,7 @@ async def upcoming_notes_command(update: Update, context: ContextTypes.DEFAULT_T
     ]
     await update.message.reply_text("\n".join(messages))
 
-# Проверка напоминаний и отправка пользователю
+# Проверка напоминаний и отправка (в канал или пользователю, в зависимости от note.user_id)
 async def check_reminders():
     now = datetime.now(ZoneInfo("Europe/Moscow"))
     upcoming = get_upcoming_reminders_window(now, now + timedelta(minutes=5))
@@ -97,16 +111,22 @@ async def check_reminders():
 # Инициализация приложения и хендлеров
 application = Application.builder().token(BOT_TOKEN).build()
 
-application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
-application.add_handler(CommandHandler("upcoming", upcoming_notes_command))
+# Хендлер для приватных сообщений (раскомментируйте, если хотите сохранять напоминания из приватных чатов)
+# application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND & filters.ChatType.PRIVATE, handle_private_message))
+
+# Хендлер для постов в канале
+application.add_handler(MessageHandler(filters.TEXT & filters.ChatType.CHANNEL, handle_channel_post))
+
+# Команда (ограничена приватными чатами)
+application.add_handler(CommandHandler("upcoming", upcoming_notes_command, filters=filters.ChatType.PRIVATE))
 
 # Настройка APScheduler
 scheduler = AsyncIOScheduler()
 scheduler.add_job(check_reminders, "interval", minutes=1)
-scheduler.start()
 
 # Запуск бота в зависимости от USE_WEBHOOK
 if __name__ == "__main__":
+    scheduler.start()  # Запускаем здесь, чтобы избежать дубликатов
     if USE_WEBHOOK:
         logger.info("Starting bot with webhooks...")
         application.run_webhook(
