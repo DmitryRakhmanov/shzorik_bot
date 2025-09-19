@@ -30,7 +30,7 @@ jobs:
       # 4. Запуск бота с переменными из GitHub Secrets
       - name: Run reminders
         env:
-          TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           DATABASE_URL: ${{ secrets.DATABASE_URL }}
           TZ: ${{ secrets.TZ }}                      # например Europe/Moscow
           TELEGRAM_CHANNEL_ID: ${{ secrets.TELEGRAM_CHANNEL_ID }}
