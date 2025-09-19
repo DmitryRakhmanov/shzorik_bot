@@ -1,17 +1,20 @@
 import os
 from datetime import datetime
 from zoneinfo import ZoneInfo
-from sqlalchemy import create_engine, Column, Integer, String, DateTime, Boolean, select
+from sqlalchemy import create_engine, Column, Integer, String, DateTime, Boolean, select, update
 from sqlalchemy.orm import sessionmaker, declarative_base
-from dotenv import load_dotenv
 
-# Загружаем переменные окружения из .env
-load_dotenv()
+# Опционально загружаем .env, если есть (для локальной разработки)
+try:
+    from dotenv import load_dotenv
+    load_dotenv()
+except ImportError:
+    pass  # dotenv может отсутствовать на GitHub Actions
 
-# Получаем URL базы данных из переменной окружения
+# Берём URL базы данных из окружения
 DATABASE_URL = os.environ.get("DATABASE_URL")
 if not DATABASE_URL:
-    raise ValueError("DATABASE_URL не задан в .env файле")
+    raise ValueError("DATABASE_URL не задан в .env файле или в Secrets GitHub Actions")
 
 # Создаем движок и сессию SQLAlchemy
 engine = create_engine(DATABASE_URL)
@@ -36,22 +39,26 @@ def init_db():
 
 # Добавление заметки
 def add_note(user_id: int, text: str, hashtags: str, reminder_date: datetime | None):
-    with SessionLocal() as session:
+    session = SessionLocal()
+    try:
         note = Note(
             user_id=user_id,
             text=text,
             hashtags=hashtags,
             reminder_date=reminder_date,
             reminder_sent=False,
-        )  # created_at устанавливается по default
+        )
         session.add(note)
         session.commit()
         session.refresh(note)
         return note
+    finally:
+        session.close()
 
 # Получение предстоящих напоминаний в окне времени
 def get_upcoming_reminders_window(start_time: datetime, end_time: datetime, only_unsent: bool = True):
-    with SessionLocal() as session:
+    session = SessionLocal()
+    try:
         stmt = select(Note).where(
             Note.reminder_date.isnot(None),
             Note.reminder_date >= start_time,
@@ -61,13 +68,16 @@ def get_upcoming_reminders_window(start_time: datetime, end_time: datetime, only
             stmt = stmt.where(Note.reminder_sent == False)
         stmt = stmt.order_by(Note.reminder_date)
         return session.execute(stmt).scalars().all()
+    finally:
+        session.close()
 
 # Отметить напоминание как отправленное
 def mark_reminder_sent(note_id: int):
-    with SessionLocal() as session:
-        note = session.get(Note, note_id)
-        if note:
-            note.reminder_sent = True
-            session.commit()
-            return True
-        return False
+    session = SessionLocal()
+    try:
+        stmt = update(Note).where(Note.id == note_id).values(reminder_sent=True)
+        result = session.execute(stmt)
+        session.commit()
+        return result.rowcount > 0
+    finally:
+        session.close()
