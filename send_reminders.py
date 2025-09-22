@@ -82,7 +82,7 @@ def main():
             display_time = to_display_time(note.reminder_date)
             text = f"🔔 Напоминание: '{note.text}' назначено на {display_time}."
             logger.info("Отправка напоминания для note id=%s: %s", note.id, text)
-            bot.send_message(chat_id=channel_id, text=text)
+            bot.send_message(chat_id=TELEGRAM_CHANNEL_ID, text=text)
             # Пометка как отправленного
             ok = mark_reminder_sent(note.id)
             if ok:
