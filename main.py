@@ -10,7 +10,6 @@ from dotenv import load_dotenv
 from database import init_db, add_note, get_upcoming_reminders_window, mark_reminder_sent
 from aiohttp import web
 
-# Логирование
 logging.basicConfig(
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
     level=logging.INFO
@@ -28,10 +27,10 @@ WEBHOOK_PORT = int(os.environ.get("PORT", 10000))
 USE_WEBHOOK = os.environ.get("USE_WEBHOOK", "false").lower() in ("true", "1", "t")
 
 if not BOT_TOKEN:
-    raise ValueError("Не задан TELEGRAM_BOT_TOKEN в .env файле")
+    raise ValueError("TELEGRAM_BOT_TOKEN не задан")
 
 if USE_WEBHOOK and not all([WEBHOOK_URL, WEBHOOK_SECRET, WEBHOOK_PORT]):
-    raise ValueError("При USE_WEBHOOK=true, WEBHOOK_URL, WEBHOOK_SECRET_TOKEN и PORT должны быть заданы")
+    raise ValueError("При USE_WEBHOOK=true нужны WEBHOOK_URL, WEBHOOK_SECRET_TOKEN и PORT")
 
 init_db()
 logger.info("Database initialized.")
@@ -54,7 +53,7 @@ async def handle_private_message(update: Update, context: ContextTypes.DEFAULT_T
     text = update.message.text
     cleaned_text, hashtags, reminder_date = parse_reminder(text)
     if "#напоминание" not in hashtags or reminder_date is None:
-        await update.message.reply_text("❌ Сообщение должно содержать #напоминание и время в формате @HH:MM DD-MM-YYYY.")
+        await update.message.reply_text("❌ Нужно #напоминание и формат @HH:MM DD-MM-YYYY.")
         return
     note = add_note(user_id, cleaned_text, " ".join(hashtags), reminder_date)
     reply = f"✅ Напоминание сохранено: '{note.text}' на {note.reminder_date.astimezone(ZoneInfo('Europe/Moscow')).strftime('%H:%M %d-%m-%Y')}"
@@ -75,14 +74,10 @@ async def handle_channel_post(update: Update, context: ContextTypes.DEFAULT_TYPE
     logger.info(f"Saved reminder from channel: {note.text}")
 
 async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("Привет! Я бот для напоминаний. Я сохраняю напоминания из канала и уведомляю о них.")
+    await update.message.reply_text("Привет! Я бот для напоминаний.")
 
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    help_text = """
-    /start - начало работы
-    /help - помощь
-    /upcoming - список напоминаний
-    """
+    help_text = "/start - начало работы\n/help - помощь\n/upcoming - список напоминаний"
     await update.message.reply_text(help_text)
 
 async def upcoming_notes_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -91,10 +86,7 @@ async def upcoming_notes_command(update: Update, context: ContextTypes.DEFAULT_T
     if not notes:
         await update.message.reply_text("Нет предстоящих напоминаний.")
         return
-    messages = []
-    for note in notes:
-        reminder_date_moscow = note.reminder_date.astimezone(ZoneInfo("Europe/Moscow"))
-        messages.append(f"🔔 {note.text} - назначено на {reminder_date_moscow.strftime('%H:%M %d-%m-%Y')}")
+    messages = [f"🔔 {note.text} - назначено на {note.reminder_date.astimezone(ZoneInfo('Europe/Moscow')).strftime('%H:%M %d-%m-%Y')}" for note in notes]
     await update.message.reply_text("\n".join(messages))
 
 async def check_reminders():
@@ -102,10 +94,9 @@ async def check_reminders():
     upcoming = get_upcoming_reminders_window(now, now + timedelta(days=1))
     for note in upcoming:
         try:
-            reminder_date_moscow = note.reminder_date.astimezone(ZoneInfo("Europe/Moscow"))
             await application.bot.send_message(
                 chat_id=note.user_id,
-                text=f"🔔 Напоминание: '{note.text}' назначено на {reminder_date_moscow.strftime('%H:%M %d-%m-%Y')}"
+                text=f"🔔 Напоминание: '{note.text}' назначено на {note.reminder_date.astimezone(ZoneInfo('Europe/Moscow')).strftime('%H:%M %d-%m-%Y')}"
             )
             mark_reminder_sent(note.id)
             logger.info(f"Sent reminder: {note.text}")
@@ -146,5 +137,4 @@ async def main():
 
 if __name__ == "__main__":
     import asyncio
-    asyncio.create_task(main())
-    asyncio.get_event_loop().run_forever()
+    asyncio.run(main())
