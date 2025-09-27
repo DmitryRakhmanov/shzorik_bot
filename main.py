@@ -1,7 +1,6 @@
 import os
 import re
 import logging
-import asyncio
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 from telegram import Update
@@ -21,6 +20,7 @@ load_dotenv()
 
 BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
 DATABASE_URL = os.environ.get("DATABASE_URL")
+TELEGRAM_CHANNEL_ID = int(os.environ.get("TELEGRAM_CHANNEL_ID", 0))
 WEBHOOK_URL = os.environ.get("WEBHOOK_URL")
 WEBHOOK_SECRET = os.environ.get("WEBHOOK_SECRET_TOKEN")
 WEBHOOK_PORT = int(os.environ.get("PORT", 10000))
@@ -64,10 +64,11 @@ async def handle_channel_post(update: Update, context: ContextTypes.DEFAULT_TYPE
     if not update.channel_post:
         return
     text = update.channel_post.text
+    channel_id = update.channel_post.chat.id
     cleaned_text, hashtags, reminder_date = parse_reminder(text)
     if "#напоминание" not in hashtags or reminder_date is None:
         return
-    note = add_note(update.channel_post.chat.id, cleaned_text, " ".join(hashtags), reminder_date)
+    note = add_note(channel_id, cleaned_text, " ".join(hashtags), reminder_date)
     reply = f"✅ Напоминание сохранено: '{note.text}' на {note.reminder_date.astimezone(ZoneInfo('Europe/Moscow')).strftime('%H:%M %d-%m-%Y')}"
     await update.channel_post.reply_text(reply)
     logger.info(f"Saved reminder from channel: {note.text}")
@@ -111,7 +112,7 @@ application.add_handler(CommandHandler("help", help_command, filters=filters.Cha
 application.add_handler(CommandHandler("upcoming", upcoming_notes_command, filters=filters.ChatType.PRIVATE))
 
 scheduler = AsyncIOScheduler()
-scheduler.add_job(check_reminders, "interval", minutes=60)
+scheduler.add_job(check_reminders, "interval", minutes=1)
 scheduler.start()
 
 async def health(request):
@@ -119,7 +120,7 @@ async def health(request):
 
 async def main():
     app = web.Application()
-    app.router.add_get("/", health)
+    app.router.add_get("/", health)  # Для uptime-robot
     runner = web.AppRunner(app)
     await runner.setup()
     site = web.TCPSite(runner, "0.0.0.0", WEBHOOK_PORT + 1)
@@ -127,17 +128,15 @@ async def main():
     logger.info(f"Health-check server started on port {WEBHOOK_PORT + 1}")
 
     if USE_WEBHOOK:
-        await application.initialize()
-        await application.start_webhook(
+        await application.run_webhook(
             listen="0.0.0.0",
             port=WEBHOOK_PORT,
-            webhook_path=f"/{BOT_TOKEN}",
-            webhook_url=f"{WEBHOOK_URL}/{BOT_TOKEN}",
+            webhook_url=WEBHOOK_URL,
             secret_token=WEBHOOK_SECRET
         )
-        await application.updater.start_polling()  # Нужно для запуска webhook loop
     else:
         await application.run_polling()
 
 if __name__ == "__main__":
+    import asyncio
     asyncio.run(main())
