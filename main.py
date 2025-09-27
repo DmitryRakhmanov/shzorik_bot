@@ -1,17 +1,14 @@
 import os
 import re
 import logging
-import asyncio
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
-
-from aiohttp import web
 from telegram import Update
 from telegram.ext import Application, CommandHandler, ContextTypes, MessageHandler, filters
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from dotenv import load_dotenv
-
 from database import init_db, add_note, get_upcoming_reminders_window, mark_reminder_sent
+from aiohttp import web
 
 # Логирование
 logging.basicConfig(
@@ -20,10 +17,8 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# Загружаем .env
 load_dotenv()
 
-# Переменные окружения
 BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
 DATABASE_URL = os.environ.get("DATABASE_URL")
 TELEGRAM_CHANNEL_ID = int(os.environ.get("TELEGRAM_CHANNEL_ID", 0))
@@ -33,16 +28,14 @@ WEBHOOK_PORT = int(os.environ.get("PORT", 10000))
 USE_WEBHOOK = os.environ.get("USE_WEBHOOK", "false").lower() in ("true", "1", "t")
 
 if not BOT_TOKEN:
-    raise ValueError("TELEGRAM_BOT_TOKEN не задан в .env")
+    raise ValueError("Не задан TELEGRAM_BOT_TOKEN в .env файле")
 
 if USE_WEBHOOK and not all([WEBHOOK_URL, WEBHOOK_SECRET, WEBHOOK_PORT]):
     raise ValueError("При USE_WEBHOOK=true, WEBHOOK_URL, WEBHOOK_SECRET_TOKEN и PORT должны быть заданы")
 
-# Инициализация базы данных
 init_db()
 logger.info("Database initialized.")
 
-# === Парсинг напоминаний ===
 def parse_reminder(text: str):
     hashtags = re.findall(r"#[а-яА-ЯёЁa-zA-Z0-9_]+", text)
     dt_match = re.search(r"@(\d{2}:\d{2}) (\d{2}-\d{2}-\d{4})", text)
@@ -56,7 +49,6 @@ def parse_reminder(text: str):
             return text, " ".join(hashtags), None
     return text, hashtags, reminder_date
 
-# === Обработчики ===
 async def handle_private_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     text = update.message.text
@@ -83,13 +75,13 @@ async def handle_channel_post(update: Update, context: ContextTypes.DEFAULT_TYPE
     logger.info(f"Saved reminder from channel: {note.text}")
 
 async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("Привет! Я бот для напоминаний.")
+    await update.message.reply_text("Привет! Я бот для напоминаний. Я сохраняю напоминания из канала и уведомляю о них.")
 
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     help_text = """
-    /start - Приветствие
-    /help - Помощь
-    /upcoming - Предстоящие напоминания
+    /start - начало работы
+    /help - помощь
+    /upcoming - список напоминаний
     """
     await update.message.reply_text(help_text)
 
@@ -99,10 +91,10 @@ async def upcoming_notes_command(update: Update, context: ContextTypes.DEFAULT_T
     if not notes:
         await update.message.reply_text("Нет предстоящих напоминаний.")
         return
-    messages = [
-        f"🔔 {note.text} - {note.reminder_date.astimezone(ZoneInfo('Europe/Moscow')).strftime('%H:%M %d-%m-%Y')} (отправлено: {'да' if note.reminder_sent else 'нет'})"
-        for note in notes
-    ]
+    messages = []
+    for note in notes:
+        reminder_date_moscow = note.reminder_date.astimezone(ZoneInfo("Europe/Moscow"))
+        messages.append(f"🔔 {note.text} - назначено на {reminder_date_moscow.strftime('%H:%M %d-%m-%Y')}")
     await update.message.reply_text("\n".join(messages))
 
 async def check_reminders():
@@ -120,8 +112,8 @@ async def check_reminders():
         except Exception as e:
             logger.error(f"Failed to send reminder: {e}")
 
-# === Инициализация приложения ===
 application = Application.builder().token(BOT_TOKEN).build()
+
 application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND & filters.ChatType.PRIVATE, handle_private_message))
 application.add_handler(MessageHandler(filters.TEXT & filters.ChatType.CHANNEL, handle_channel_post))
 application.add_handler(CommandHandler("start", start_command, filters=filters.ChatType.PRIVATE))
@@ -130,40 +122,29 @@ application.add_handler(CommandHandler("upcoming", upcoming_notes_command, filte
 
 scheduler = AsyncIOScheduler()
 scheduler.add_job(check_reminders, "interval", minutes=1)
+scheduler.start()
 
-# === Health-check сервер ===
-HEALTH_PORT = WEBHOOK_PORT + 1
-
-async def health_check(request):
+async def health(request):
     return web.Response(text="OK")
 
-async def start_health_server():
-    app = web.Application()
-    app.router.add_get("/", health_check)
-    app.router.add_get("/healthz", health_check)
-    runner = web.AppRunner(app)
-    await runner.setup()
-    site = web.TCPSite(runner, "0.0.0.0", HEALTH_PORT)
-    await site.start()
-    logger.info(f"Health-check server started on port {HEALTH_PORT}")
-
-# === Запуск ===
 async def main():
-    scheduler.start()
-    await start_health_server()
+    runner = web.AppRunner(web.Application())
+    await runner.setup()
+    site = web.TCPSite(runner, "0.0.0.0", WEBHOOK_PORT + 1)
+    await site.start()
+    logger.info(f"Health-check server started on port {WEBHOOK_PORT + 1}")
 
     if USE_WEBHOOK:
-        logger.info("Starting bot with webhooks...")
         await application.run_webhook(
             listen="0.0.0.0",
             port=WEBHOOK_PORT,
-            url_path="/telegram",
             webhook_url=WEBHOOK_URL,
             secret_token=WEBHOOK_SECRET
         )
     else:
-        logger.info("Starting bot with polling...")
         await application.run_polling()
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    import asyncio
+    asyncio.create_task(main())
+    asyncio.get_event_loop().run_forever()
