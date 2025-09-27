@@ -120,7 +120,7 @@ async def health(request):
 
 async def main():
     app = web.Application()
-    app.router.add_get("/", health)  # Для uptime-robot
+    app.router.add_get("/", health)
     runner = web.AppRunner(app)
     await runner.setup()
     site = web.TCPSite(runner, "0.0.0.0", WEBHOOK_PORT + 1)

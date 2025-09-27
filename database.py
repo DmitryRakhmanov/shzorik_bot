@@ -1,83 +1,60 @@
 import os
+import sqlite3
 from datetime import datetime
-from zoneinfo import ZoneInfo
-from sqlalchemy import create_engine, Column, Integer, String, DateTime, Boolean, select, update
-from sqlalchemy.orm import sessionmaker, declarative_base
+from dataclasses import dataclass
 
-# Опционально загружаем .env, если есть (для локальной разработки)
-try:
-    from dotenv import load_dotenv
-    load_dotenv()
-except ImportError:
-    pass  # dotenv может отсутствовать на GitHub Actions
+DATABASE_URL = os.environ.get("DATABASE_URL", "bot.db")
 
-# Берём URL базы данных из окружения
-DATABASE_URL = os.environ.get("DATABASE_URL")
-if not DATABASE_URL:
-    raise ValueError("DATABASE_URL не задан в .env файле или в Secrets GitHub Actions")
+@dataclass
+class Note:
+    id: int
+    user_id: int
+    text: str
+    hashtags: str
+    reminder_date: datetime
+    sent: bool
 
-# Создаем движок и сессию SQLAlchemy
-engine = create_engine(DATABASE_URL)
-SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
-Base = declarative_base()
-
-# Модель Notes
-class Note(Base):
-    __tablename__ = "notes"
-
-    id = Column(Integer, primary_key=True, index=True)
-    user_id = Column(Integer, nullable=False)
-    text = Column(String, nullable=False)
-    hashtags = Column(String, nullable=True)
-    reminder_date = Column(DateTime(timezone=True), nullable=True)
-    reminder_sent = Column(Boolean, default=False)
-    created_at = Column(DateTime(timezone=True), default=lambda: datetime.now(ZoneInfo("Europe/Moscow")))
-
-# Инициализация базы данных
 def init_db():
-    Base.metadata.create_all(bind=engine)
-
-# Добавление заметки
-def add_note(user_id: int, text: str, hashtags: str, reminder_date: datetime | None):
-    session = SessionLocal()
-    try:
-        note = Note(
-            user_id=user_id,
-            text=text,
-            hashtags=hashtags,
-            reminder_date=reminder_date,
-            reminder_sent=False,
+    conn = sqlite3.connect(DATABASE_URL)
+    cursor = conn.cursor()
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS notes (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id INTEGER NOT NULL,
+            text TEXT NOT NULL,
+            hashtags TEXT,
+            reminder_date TEXT,
+            sent INTEGER DEFAULT 0
         )
-        session.add(note)
-        session.commit()
-        session.refresh(note)
-        return note
-    finally:
-        session.close()
+    """)
+    conn.commit()
+    conn.close()
 
-# Получение предстоящих напоминаний в окне времени
-def get_upcoming_reminders_window(start_time: datetime, end_time: datetime, only_unsent: bool = True):
-    session = SessionLocal()
-    try:
-        stmt = select(Note).where(
-            Note.reminder_date.isnot(None),
-            Note.reminder_date >= start_time,
-            Note.reminder_date <= end_time
-        )
-        if only_unsent:
-            stmt = stmt.where(Note.reminder_sent == False)
-        stmt = stmt.order_by(Note.reminder_date)
-        return session.execute(stmt).scalars().all()
-    finally:
-        session.close()
+def add_note(user_id, text, hashtags, reminder_date):
+    conn = sqlite3.connect(DATABASE_URL)
+    cursor = conn.cursor()
+    cursor.execute("INSERT INTO notes (user_id, text, hashtags, reminder_date) VALUES (?, ?, ?, ?)",
+                   (user_id, text, hashtags, reminder_date.isoformat()))
+    conn.commit()
+    note_id = cursor.lastrowid
+    conn.close()
+    return Note(note_id, user_id, text, hashtags, reminder_date, False)
 
-# Отметить напоминание как отправленное
-def mark_reminder_sent(note_id: int):
-    session = SessionLocal()
-    try:
-        stmt = update(Note).where(Note.id == note_id).values(reminder_sent=True)
-        result = session.execute(stmt)
-        session.commit()
-        return result.rowcount > 0
-    finally:
-        session.close()
+def get_upcoming_reminders_window(start_time, end_time, only_unsent=True):
+    conn = sqlite3.connect(DATABASE_URL)
+    cursor = conn.cursor()
+    query = "SELECT id, user_id, text, hashtags, reminder_date, sent FROM notes WHERE reminder_date BETWEEN ? AND ?"
+    params = (start_time.isoformat(), end_time.isoformat())
+    if only_unsent:
+        query += " AND sent=0"
+    cursor.execute(query, params)
+    rows = cursor.fetchall()
+    conn.close()
+    return [Note(row[0], row[1], row[2], row[3], datetime.fromisoformat(row[4]), bool(row[5])) for row in rows]
+
+def mark_reminder_sent(note_id):
+    conn = sqlite3.connect(DATABASE_URL)
+    cursor = conn.cursor()
+    cursor.execute("UPDATE notes SET sent=1 WHERE id=?", (note_id,))
+    conn.commit()
+    conn.close()
