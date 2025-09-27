@@ -1,6 +1,7 @@
 import os
 import re
 import logging
+import asyncio
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 from telegram import Update
@@ -9,20 +10,17 @@ from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from dotenv import load_dotenv
 from database import init_db, add_note, get_upcoming_reminders_window, mark_reminder_sent
 
-# --- Новый импорт для health-check ---
-from aiohttp import web
+from aiohttp import web   # health-check
 
-# Настройка логирования
+# Логирование
 logging.basicConfig(
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
     level=logging.INFO
 )
 logger = logging.getLogger(__name__)
 
-# Загружаем переменные окружения из .env
+# Переменные окружения
 load_dotenv()
-
-# Получение токенов и URL из переменных окружения
 BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
 DATABASE_URL = os.environ.get("DATABASE_URL")
 TELEGRAM_CHANNEL_ID = int(os.environ.get("TELEGRAM_CHANNEL_ID", 0))
@@ -37,15 +35,25 @@ if not BOT_TOKEN:
 if USE_WEBHOOK and not all([WEBHOOK_URL, WEBHOOK_SECRET, WEBHOOK_PORT]):
     raise ValueError("При USE_WEBHOOK=true, WEBHOOK_URL, WEBHOOK_SECRET_TOKEN и PORT должны быть заданы")
 
-# Инициализация базы данных
+# DB init
 init_db()
 logger.info("Database initialized.")
 
-# --- Health-check endpoint ---
+# Health-check
 async def health_check(request):
     return web.Response(text="OK", status=200)
 
-# Парсинг напоминаний из сообщения
+async def start_health_server():
+    app = web.Application()
+    app.router.add_get("/", health_check)         # корень
+    app.router.add_get("/healthz", health_check)  # отдельный путь
+    runner = web.AppRunner(app)
+    await runner.setup()
+    site = web.TCPSite(runner, "0.0.0.0", WEBHOOK_PORT)
+    await site.start()
+    logger.info(f"Health-check server started on port {WEBHOOK_PORT}")
+
+# --- Парсинг напоминаний ---
 def parse_reminder(text: str):
     hashtags = re.findall(r"#[а-яА-ЯёЁa-zA-Z0-9_]+", text)
     dt_match = re.search(r"@(\d{2}:\d{2}) (\d{2}-\d{2}-\d{4})", text)
@@ -59,7 +67,7 @@ def parse_reminder(text: str):
             return text, " ".join(hashtags), None
     return text, hashtags, reminder_date
 
-# Обработчики (оставил как было)
+# --- Обработчики ---
 async def handle_private_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     text = update.message.text
@@ -120,9 +128,10 @@ async def check_reminders():
         except Exception as e:
             logger.error(f"Failed to send reminder: {e}")
 
-# Инициализация приложения
+# --- Инициализация приложения ---
 application = Application.builder().token(BOT_TOKEN).build()
 
+application.add_handler(MessageHandler(filters.TEXT & filters.ChatType.PRIVATE, handle_private_message))
 application.add_handler(MessageHandler(filters.TEXT & filters.ChatType.CHANNEL, handle_channel_post))
 application.add_handler(CommandHandler("start", start_command, filters=filters.ChatType.PRIVATE))
 application.add_handler(CommandHandler("help", help_command, filters=filters.ChatType.PRIVATE))
@@ -131,33 +140,25 @@ application.add_handler(CommandHandler("upcoming", upcoming_notes_command, filte
 scheduler = AsyncIOScheduler()
 scheduler.add_job(check_reminders, "interval", minutes=1)
 
-if __name__ == "__main__":
+# --- Запуск ---
+async def main():
     scheduler.start()
+
+    # Запускаем health-check сервер
+    asyncio.create_task(start_health_server())
 
     if USE_WEBHOOK:
         logger.info("Starting bot with webhooks...")
-
-        # --- Подключаем health-check сервер ---
-        app = web.Application()
-        app.router.add_get("/healthz", health_check)
-
-        # Запускаем одновременно webhook и HTTP-сервер
-        application.run_webhook(
+        await application.run_webhook(
             listen="0.0.0.0",
             port=WEBHOOK_PORT,
             url_path="/telegram",
             webhook_url=WEBHOOK_URL,
             secret_token=WEBHOOK_SECRET,
-            web_app=app  # <-- добавлено
         )
     else:
         logger.info("Starting bot with polling...")
+        await application.run_polling(allowed_updates=Update.ALL_TYPES)
 
-        # --- Подключаем health-check сервер ---
-        app = web.Application()
-        app.router.add_get("/healthz", health_check)
-
-        application.run_polling(
-            allowed_updates=Update.ALL_TYPES,
-            web_app=app  # <-- добавлено
-        )
+if __name__ == "__main__":
+    asyncio.run(main())
