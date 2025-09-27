@@ -45,8 +45,8 @@ async def health_check(request):
 
 async def start_health_server():
     app = web.Application()
-    app.router.add_get("/", health_check)         # корень
-    app.router.add_get("/healthz", health_check)  # отдельный путь
+    app.router.add_get("/", health_check)
+    app.router.add_get("/healthz", health_check)
     runner = web.AppRunner(app)
     await runner.setup()
     site = web.TCPSite(runner, "0.0.0.0", WEBHOOK_PORT)
@@ -141,15 +141,15 @@ scheduler = AsyncIOScheduler()
 scheduler.add_job(check_reminders, "interval", minutes=1)
 
 # --- Запуск ---
-async def main():
+if __name__ == "__main__":
     scheduler.start()
 
-    # Запускаем health-check сервер
-    asyncio.create_task(start_health_server())
+    loop = asyncio.get_event_loop()
+    loop.create_task(start_health_server())
 
     if USE_WEBHOOK:
         logger.info("Starting bot with webhooks...")
-        await application.run_webhook(
+        application.run_webhook(
             listen="0.0.0.0",
             port=WEBHOOK_PORT,
             url_path="/telegram",
@@ -158,7 +158,4 @@ async def main():
         )
     else:
         logger.info("Starting bot with polling...")
-        await application.run_polling(allowed_updates=Update.ALL_TYPES)
-
-if __name__ == "__main__":
-    asyncio.run(main())
+        application.run_polling(allowed_updates=Update.ALL_TYPES)
