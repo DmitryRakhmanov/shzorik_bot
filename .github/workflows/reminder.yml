@@ -2,42 +2,25 @@ name: Reminder Bot
 
 on:
   schedule:
-    - cron: "*/5 * * * *"   # каждые 5 минут
-  workflow_dispatch:        # ручной запуск
+    - cron: "*/5 * * * *"
+  workflow_dispatch:
 
 jobs:
   check-reminders:
     runs-on: ubuntu-latest
-
     steps:
       - name: Checkout repo
         uses: actions/checkout@v4
-
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
           python-version: "3.12"
-
       - name: Install dependencies
         run: |
-          python -m pip install --upgrade pip
           pip install -r requirements.txt
-
       - name: Run reminder checks
         env:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           DATABASE_URL: ${{ secrets.DATABASE_URL }}
         run: |
           python send_reminders.py
-
-      - name: Notify on failure
-        if: failure()
-        uses: actions/github-script@v6
-        with:
-          script: |
-            github.rest.actions.createWorkflowDispatch({
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              workflow_id: 'reminder.yml',
-              ref: 'main'
-            })
