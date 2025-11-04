@@ -1,9 +1,7 @@
-python-telegram-bot[webhooks]==21.0 # Or the very latest 21.x version if 21.0 has issues.
-APScheduler==3.10.4
-SQLAlchemy==2.0.29 # Keep this as is, as the Python version fixed the error.
-httpx==0.27.0
-psycopg2-binary==2.9.9
-python-dotenv==1.0.1
-aiohttp>=3.8
-requests
-Flask==2.2.2 
+python-telegram-bot==20.7
+python-dotenv==1.0.0
+apscheduler==3.10.4
+flask==2.3.3
+requests==2.31.0
+sqlalchemy==2.0.23
+psycopg2-binary==2.9.7

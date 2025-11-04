@@ -10,6 +10,8 @@ from dotenv import load_dotenv
 from database import init_db, add_note, get_upcoming_reminders_window, mark_reminder_sent
 from flask import Flask, jsonify
 import threading
+import requests
+import asyncio
 
 # Настройка логирования
 logging.basicConfig(
@@ -29,6 +31,7 @@ WEBHOOK_URL = os.environ.get("WEBHOOK_URL")
 WEBHOOK_SECRET = os.environ.get("WEBHOOK_SECRET_TOKEN")
 WEBHOOK_PORT = int(os.environ.get("PORT", 10000))
 USE_WEBHOOK = os.environ.get("USE_WEBHOOK", 'false').lower() in ('true', '1', 't')
+RENDER_APP_URL = os.environ.get("RENDER_APP_URL")  # Добавляем URL приложения на Render
 
 if not BOT_TOKEN:
     raise ValueError("Не задан TELEGRAM_BOT_TOKEN в .env файле")
@@ -43,15 +46,26 @@ logger.info("Database initialized.")
 # Flask приложение для пинга
 app = Flask(__name__)
 
+@app.route('/')
+def home():
+    return "Reminder Bot is running!"
+
 @app.route('/ping', methods=['GET'])
 def ping():
-    return jsonify({"status": "OK"}), 200  # Ответ на запрос от UptimeRobot
+    return jsonify({"status": "OK", "timestamp": datetime.now().isoformat()}), 200
 
-if __name__ == "__main__":
-    app.run(host='0.0.0.0', port=WEBHOOK_PORT)
+# Функция для самопинга (чтобы приложение не засыпало)
+def self_ping():
+    if RENDER_APP_URL:
+        try:
+            response = requests.get(f"{RENDER_APP_URL}/ping", timeout=10)
+            logger.info(f"Self-ping successful: {response.status_code}")
+        except Exception as e:
+            logger.error(f"Self-ping failed: {e}")
 
 # Парсинг напоминаний из сообщения
 def parse_reminder(text: str):
+    # Поддержка кириллицы в хэштегах
     hashtags = re.findall(r"#[а-яА-ЯёЁa-zA-Z0-9_]+", text)
     dt_match = re.search(r"@(\d{2}:\d{2}) (\d{2}-\d{2}-\d{4})", text)
     reminder_date = None
@@ -61,10 +75,10 @@ def parse_reminder(text: str):
             reminder_date = datetime.strptime(f"{date_str} {time_str}", "%d-%m-%Y %H:%M")
             reminder_date = reminder_date.replace(tzinfo=ZoneInfo("Europe/Moscow"))
         except ValueError:
-            return text, " ".join(hashtags), None
-    return text, hashtags, reminder_date
+            return text, " ".join(hashtags), None  # Если формат неверный
+    return text, hashtags, reminder_date  # Возвращаем список hashtags для проверки
 
-# Обработчик сообщений в приватном чате
+# Обработчик сообщений в приватном чате (если нужно сохранять из приватных - раскомментируйте добавление хендлера ниже)
 async def handle_private_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     text = update.message.text
@@ -77,6 +91,20 @@ async def handle_private_message(update: Update, context: ContextTypes.DEFAULT_T
     await update.message.reply_text(reply)
     logger.info(f"Saved reminder: {note.text}")
 
+# Обработчик постов в канале
+async def handle_channel_post(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not update.channel_post:
+        return
+    text = update.channel_post.text
+    channel_id = update.channel_post.chat.id
+    cleaned_text, hashtags, reminder_date = parse_reminder(text)
+    if "#напоминание" not in hashtags or reminder_date is None:
+        return  # Игнорируем недействительные посты
+    note = add_note(channel_id, cleaned_text, " ".join(hashtags), reminder_date)
+    reply = f"✅ Напоминание сохранено: '{note.text}' на {note.reminder_date.astimezone(ZoneInfo('Europe/Moscow')).strftime('%H:%M %d-%m-%Y')}"
+    await update.channel_post.reply_text(reply)
+    logger.info(f"Saved reminder from channel: {note.text}")
+
 # Команда /start
 async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("Привет! Я бот для напоминаний. Я сохраняю напоминания из канала и уведомляю о них. Используйте /upcoming для просмотра предстоящих напоминаний. Для помощи используйте /help.")
@@ -88,10 +116,12 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     /start - Приветствие и начало работы
     /help - Показать эту помощь
     /upcoming - Показать предстоящие напоминания на сегодня
+
+    Бот работает с каналом: сохраняет сообщения с #напоминание и @HH:MM DD-MM-YYYY, уведомляет за сутки или раньше.
     """
     await update.message.reply_text(help_text)
 
-# Команда для просмотра предстоящих напоминаний
+# Команда для просмотра предстоящих напоминаний (работает в приватном чате)
 async def upcoming_notes_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     now = datetime.now(ZoneInfo("Europe/Moscow"))
     notes = get_upcoming_reminders_window(now, now + timedelta(days=30), only_unsent=False)
@@ -101,10 +131,12 @@ async def upcoming_notes_command(update: Update, context: ContextTypes.DEFAULT_T
     messages = []
     for note in notes:
         reminder_date_moscow = note.reminder_date.astimezone(ZoneInfo("Europe/Moscow"))
-        messages.append(f"🔔 {note.text} - назначено на {reminder_date_moscow.strftime('%H:%M %d-%m-%Y')} (отправлено: {'да' if note.reminder_sent else 'нет'})")
+        messages.append(
+            f"🔔 {note.text} - назначено на {reminder_date_moscow.strftime('%H:%M %d-%m-%Y')} (отправлено: {'да' if note.reminder_sent else 'нет'})"
+        )
     await update.message.reply_text("\n".join(messages))
 
-# Проверка напоминаний и отправка
+# Проверка напоминаний и отправка (в канал или пользователю, в зависимости от note.user_id)
 async def check_reminders():
     now = datetime.now(ZoneInfo("Europe/Moscow"))
     upcoming = get_upcoming_reminders_window(now, now + timedelta(days=1))
@@ -120,24 +152,38 @@ async def check_reminders():
         except Exception as e:
             logger.error(f"Failed to send reminder: {e}")
 
-# Инициализация приложения Telegram
+# Инициализация приложения и хендлеров
 application = Application.builder().token(BOT_TOKEN).build()
 
-# Хендлеры для сообщений и команд
-application.add_handler(CommandHandler("start", start_command))
-application.add_handler(CommandHandler("help", help_command))
-application.add_handler(CommandHandler("upcoming", upcoming_notes_command))
+# Хендлер для приватных сообщений (раскомментируйте, если хотите сохранять напоминания из приватных чатов)
+# application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND & filters.ChatType.PRIVATE, handle_private_message))
+
+# Хендлер для постов в канале
 application.add_handler(MessageHandler(filters.TEXT & filters.ChatType.CHANNEL, handle_channel_post))
+
+# Команды (ограничены приватными чатами)
+application.add_handler(CommandHandler("start", start_command, filters=filters.ChatType.PRIVATE))
+application.add_handler(CommandHandler("help", help_command, filters=filters.ChatType.PRIVATE))
+application.add_handler(CommandHandler("upcoming", upcoming_notes_command, filters=filters.ChatType.PRIVATE))
 
 # Настройка APScheduler
 scheduler = AsyncIOScheduler()
 scheduler.add_job(check_reminders, "interval", minutes=1)
 
-# Запуск Flask и бота в разных потоках
+# Добавляем самопинг каждые 10 минут
+scheduler.add_job(self_ping, "interval", minutes=10)
+
+# Запуск Flask в отдельном потоке
 def run_flask():
     app.run(host="0.0.0.0", port=WEBHOOK_PORT)
 
-def run_bot():
+# Запуск бота в зависимости от USE_WEBHOOK
+if __name__ == "__main__":
+    # Запускаем Flask в отдельном потоке
+    flask_thread = threading.Thread(target=run_flask)
+    flask_thread.daemon = True
+    flask_thread.start()
+    
     scheduler.start()  # Запускаем здесь, чтобы избежать дубликатов
     if USE_WEBHOOK:
         logger.info("Starting bot with webhooks...")
@@ -151,11 +197,3 @@ def run_bot():
     else:
         logger.info("Starting bot with polling...")
         application.run_polling(allowed_updates=Update.ALL_TYPES)
-
-if __name__ == "__main__":
-    # Запускаем Flask и бота в отдельных потоках
-    flask_thread = threading.Thread(target=run_flask)
-    flask_thread.start()
-
-    # Запускаем Telegram бота
-    run_bot()
