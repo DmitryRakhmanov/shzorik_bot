@@ -15,13 +15,11 @@ logger = logging.getLogger(__name__)
 
 # Переменные окружения
 BOT_TOKEN = os.environ.get('TELEGRAM_BOT_TOKEN')
-CHANNEL_ID_RAW = os.environ.get('TELEGRAM_CHANNEL_ID')
 DATABASE_URL = os.environ.get('DATABASE_URL')
 
-if not all([BOT_TOKEN, CHANNEL_ID_RAW, DATABASE_URL]):
+if not all([BOT_TOKEN, DATABASE_URL]):
     missing = []
     if not BOT_TOKEN: missing.append('TELEGRAM_BOT_TOKEN')
-    if not CHANNEL_ID_RAW: missing.append('TELEGRAM_CHANNEL_ID')
     if not DATABASE_URL: missing.append('DATABASE_URL')
     logger.error(f"Missing environment variables: {', '.join(missing)}")
     exit(1)
@@ -30,9 +28,10 @@ def main():
     bot = Bot(BOT_TOKEN)
     
     now_utc = datetime.datetime.now(tz=timezone.utc)
+    # Проверяем напоминания на ближайшие 24 часа
     upper_utc = now_utc + datetime.timedelta(hours=24)
 
-    logger.info(f"🔍 GitHub Actions: Checking reminders from {now_utc.isoformat()} to {upper_utc.isoformat()}")
+    logger.info(f"🔍 Checking reminders from {now_utc.isoformat()} to {upper_utc.isoformat()}")
 
     try:
         reminders = get_upcoming_reminders_window(now_utc, upper_utc)
@@ -45,26 +44,30 @@ def main():
         logger.info("✅ No reminders found for next 24 hours.")
         return
 
+    sent_count = 0
     for note in reminders:
         try:
-            # Конвертируем время
+            # Конвертируем время в локальный часовой пояс
             if note.reminder_date.tzinfo is None:
                 reminder_date_utc = note.reminder_date.replace(tzinfo=timezone.utc)
             else:
                 reminder_date_utc = note.reminder_date
                 
             reminder_date_local = reminder_date_utc.astimezone(ZoneInfo("Europe/Moscow"))
-            display_time = reminder_date_local.strftime('%H:%M %d-%m-%Y')
+            display_time = reminder_date_local.strftime('%d.%m.%Y в %H:%M')
             
-            text = f"🔔 Напоминание: '{note.text}' назначено на {display_time}."
+            text = f"🔔 Напоминание: «{note.text}» запланировано на {display_time}!"
             logger.info(f"📤 Sending reminder for note id={note.id}")
             
             bot.send_message(chat_id=note.user_id, text=text)
             mark_reminder_sent(note.id)
-            logger.info(f"✅ GitHub Actions: Reminder note id={note.id} sent successfully")
+            sent_count += 1
+            logger.info(f"✅ Reminder note id={note.id} sent successfully")
             
         except Exception as ex:
-            logger.exception(f"❌ GitHub Actions: Error sending reminder note id={getattr(note, 'id', '<unknown>')}: {ex}")
+            logger.exception(f"❌ Error sending reminder note id={getattr(note, 'id', '<unknown>')}: {ex}")
+
+    logger.info(f"🎉 Successfully sent {sent_count} out of {len(reminders)} reminders")
 
 if __name__ == '__main__':
     main()
