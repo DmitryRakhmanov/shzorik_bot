@@ -1,16 +1,17 @@
 import os
 import re
 import logging
+import time
+import threading
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
-from telegram import Bot
+
+from telegram import Update, Bot
 from telegram.ext import Application, CommandHandler, ContextTypes, MessageHandler, filters
 from dotenv import load_dotenv
 from database import init_db, add_note, get_upcoming_reminders_window, mark_reminder_sent
 from flask import Flask, jsonify
 import requests
-import threading
-import time
 
 # Настройка логирования
 logging.basicConfig(
