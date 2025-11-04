@@ -118,7 +118,8 @@ async def add_reminder(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # ---------------------------------------------------
 async def check_reminders():
     now = datetime.now(ZoneInfo("Europe/Moscow"))
-    reminders = get_upcoming_reminders_window(now)
+    end_time = now + timedelta(minutes=1)  # 🔧 добавлено
+    reminders = get_upcoming_reminders_window(now, end_time)
 
     for reminder in reminders:
         reminder_id, user_id, text, remind_at = reminder
@@ -127,6 +128,7 @@ async def check_reminders():
             mark_reminder_sent(reminder_id)
         except Exception as e:
             logger.warning(f"Ошибка при отправке напоминания пользователю {user_id}: {e}")
+
 
 # ---------------------------------------------------
 # НАСТРОЙКА SCHEDULER
