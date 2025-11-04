@@ -37,6 +37,23 @@ class Note(Base):
 def init_db():
     Base.metadata.create_all(bind=engine)
 
+def get_upcoming_reminders_window(start_time: datetime, end_time: datetime, user_id=None, only_unsent: bool = True):
+    session = SessionLocal()
+    try:
+        stmt = select(Note).where(
+            Note.reminder_date.isnot(None),
+            Note.reminder_date >= start_time,
+            Note.reminder_date <= end_time
+        )
+        if user_id:
+            stmt = stmt.where(Note.user_id == user_id)
+        if only_unsent:
+            stmt = stmt.where(Note.reminder_sent == False)
+        stmt = stmt.order_by(Note.reminder_date)
+        return session.execute(stmt).scalars().all()
+    finally:
+        session.close()
+
 # Добавление заметки
 def add_note(user_id: int, text: str, hashtags: str, reminder_date: datetime | None):
     session = SessionLocal()

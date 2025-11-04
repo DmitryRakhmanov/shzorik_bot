@@ -3,15 +3,14 @@ import re
 import logging
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
-from telegram import Update
+from telegram import Bot
 from telegram.ext import Application, CommandHandler, ContextTypes, MessageHandler, filters
-from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from dotenv import load_dotenv
 from database import init_db, add_note, get_upcoming_reminders_window, mark_reminder_sent
 from flask import Flask, jsonify
-import threading
 import requests
-import asyncio
+import threading
+import time
 
 # Настройка логирования
 logging.basicConfig(
@@ -23,21 +22,14 @@ logger = logging.getLogger(__name__)
 # Загружаем переменные окружения из .env
 load_dotenv()
 
-# Получение токенов и URL из переменных окружения
 BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
 DATABASE_URL = os.environ.get("DATABASE_URL")
-TELEGRAM_CHANNEL_ID = os.environ.get("TELEGRAM_CHANNEL_ID")  # Убрал int() - может быть строкой для @username
-WEBHOOK_URL = os.environ.get("WEBHOOK_URL")
-WEBHOOK_SECRET = os.environ.get("WEBHOOK_SECRET_TOKEN")
-PORT = int(os.environ.get("PORT", 10000))
-USE_WEBHOOK = os.environ.get("USE_WEBHOOK", 'false').lower() in ('true', '1', 't')
+TELEGRAM_CHANNEL_ID = os.environ.get("TELEGRAM_CHANNEL_ID")
 RENDER_APP_URL = os.environ.get("RENDER_APP_URL")
+PORT = int(os.environ.get("PORT", 10000))
 
 if not BOT_TOKEN:
     raise ValueError("Не задан TELEGRAM_BOT_TOKEN в .env файле")
-
-if USE_WEBHOOK and not all([WEBHOOK_URL, WEBHOOK_SECRET]):
-    raise ValueError("При USE_WEBHOOK=true, WEBHOOK_URL и WEBHOOK_SECRET_TOKEN должны быть заданы")
 
 # Инициализация базы данных
 init_db()
@@ -76,19 +68,6 @@ def parse_reminder(text: str):
         except ValueError:
             return text, hashtags, None
     return text, hashtags, reminder_date
-
-# Обработчик приватных сообщений
-async def handle_private_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_id = update.effective_user.id
-    text = update.message.text
-    cleaned_text, hashtags, reminder_date = parse_reminder(text)
-    if "#напоминание" not in hashtags or reminder_date is None:
-        await update.message.reply_text("❌ Сообщение должно содержать #напоминание и время в формате @HH:MM DD-MM-YYYY.")
-        return
-    note = add_note(user_id, cleaned_text, " ".join(hashtags), reminder_date)
-    reply = f"✅ Напоминание сохранено: '{note.text}' на {note.reminder_date.astimezone(ZoneInfo('Europe/Moscow')).strftime('%H:%M %d-%m-%Y')}"
-    await update.message.reply_text(reply)
-    logger.info(f"Saved reminder: {note.text}")
 
 # Обработчик постов в канале
 async def handle_channel_post(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -141,67 +120,85 @@ async def upcoming_notes_command(update: Update, context: ContextTypes.DEFAULT_T
     
     await update.message.reply_text("\n\n".join(messages))
 
-# Проверка напоминаний и отправка
-async def check_reminders():
-    now = datetime.now(ZoneInfo("Europe/Moscow"))
-    # Ищем напоминания на ближайшие 24 часа
-    upcoming = get_upcoming_reminders_window(now, now + timedelta(days=1))
-    
-    for note in upcoming:
+# Проверка напоминаний и отправка (простая синхронная версия)
+def check_reminders_sync():
+    """Простая синхронная проверка напоминаний"""
+    try:
+        now = datetime.now(ZoneInfo("Europe/Moscow"))
+        upcoming = get_upcoming_reminders_window(now, now + timedelta(days=1))
+        
+        bot = Bot(BOT_TOKEN)
+        
+        for note in upcoming:
+            try:
+                reminder_date_moscow = note.reminder_date.astimezone(ZoneInfo("Europe/Moscow"))
+                message_text = f"🔔 Напоминание: '{note.text}' назначено на {reminder_date_moscow.strftime('%H:%M %d-%m-%Y')}"
+                
+                bot.send_message(
+                    chat_id=note.user_id,
+                    text=message_text
+                )
+                mark_reminder_sent(note.id)
+                logger.info(f"Sent reminder to {note.user_id}: {note.text}")
+            except Exception as e:
+                logger.error(f"Failed to send reminder to {note.user_id}: {e}")
+    except Exception as e:
+        logger.error(f"Error in check_reminders_sync: {e}")
+
+# Функция для запуска периодических задач в отдельном потоке
+def run_periodic_tasks():
+    """Запуск периодических задач в бесконечном цикле"""
+    while True:
         try:
-            reminder_date_moscow = note.reminder_date.astimezone(ZoneInfo("Europe/Moscow"))
-            message_text = f"🔔 Напоминание: '{note.text}' назначено на {reminder_date_moscow.strftime('%H:%M %d-%m-%Y')}"
+            # Проверяем напоминания каждую минуту
+            check_reminders_sync()
             
-            await application.bot.send_message(
-                chat_id=note.user_id,
-                text=message_text
-            )
-            mark_reminder_sent(note.id)
-            logger.info(f"Sent reminder to {note.user_id}: {note.text}")
+            # Самопинг каждые 10 минут
+            if int(time.time()) % 600 == 0:  # Каждые 10 минут
+                self_ping()
+                
+            time.sleep(60)  # Ждем 60 секунд
         except Exception as e:
-            logger.error(f"Failed to send reminder to {note.user_id}: {e}")
-
-# Инициализация приложения Telegram
-application = Application.builder().token(BOT_TOKEN).build()
-
-# Хендлеры
-application.add_handler(MessageHandler(filters.TEXT & filters.ChatType.CHANNEL, handle_channel_post))
-application.add_handler(CommandHandler("start", start_command, filters=filters.ChatType.PRIVATE))
-application.add_handler(CommandHandler("help", help_command, filters=filters.ChatType.PRIVATE))
-application.add_handler(CommandHandler("upcoming", upcoming_notes_command, filters=filters.ChatType.PRIVATE))
-
-# Настройка APScheduler
-scheduler = AsyncIOScheduler()
-scheduler.add_job(check_reminders, "interval", minutes=1)
-scheduler.add_job(self_ping, "interval", minutes=10)
+            logger.error(f"Error in periodic tasks: {e}")
+            time.sleep(60)
 
 # Запуск Flask
 def run_flask():
-    app.run(host="0.0.0.0", port=PORT)
+    """Запуск Flask сервера"""
+    app.run(host="0.0.0.0", port=PORT, debug=False, use_reloader=False)
 
-# Основная функция для запуска бота
-async def run_bot():
-    scheduler.start()
-    
-    if USE_WEBHOOK:
-        logger.info("Starting bot with webhooks...")
-        await application.initialize()
-        await application.start()
-        await application.bot.set_webhook(
-            url=f"{WEBHOOK_URL}/telegram",
-            secret_token=WEBHOOK_SECRET
-        )
+# Запуск бота
+def run_bot():
+    """Запуск Telegram бота"""
+    try:
+        application = Application.builder().token(BOT_TOKEN).build()
         
-        # Запускаем Flask в отдельном потоке
-        flask_thread = threading.Thread(target=run_flask)
-        flask_thread.daemon = True
-        flask_thread.start()
-        
-        # Бесконечно ждем
-        await asyncio.Event().wait()
-    else:
+        # Хендлеры
+        application.add_handler(MessageHandler(filters.TEXT & filters.ChatType.CHANNEL, handle_channel_post))
+        application.add_handler(CommandHandler("start", start_command, filters=filters.ChatType.PRIVATE))
+        application.add_handler(CommandHandler("help", help_command, filters=filters.ChatType.PRIVATE))
+        application.add_handler(CommandHandler("upcoming", upcoming_notes_command, filters=filters.ChatType.PRIVATE))
+
         logger.info("Starting bot with polling...")
-        await application.run_polling(allowed_updates=Update.ALL_TYPES)
+        application.run_polling(allowed_updates=Update.ALL_TYPES, close_loop=False)
+    except Exception as e:
+        logger.error(f"Bot error: {e}")
 
 if __name__ == "__main__":
-    asyncio.run(run_bot())
+    logger.info("Starting application...")
+    
+    # Запускаем периодические задачи в отдельном потоке
+    tasks_thread = threading.Thread(target=run_periodic_tasks)
+    tasks_thread.daemon = True
+    tasks_thread.start()
+    logger.info("Periodic tasks started")
+    
+    # Запускаем Flask в отдельном потоке
+    flask_thread = threading.Thread(target=run_flask)
+    flask_thread.daemon = True
+    flask_thread.start()
+    logger.info("Flask started")
+    
+    # Запускаем бота в основном потоке
+    logger.info("Starting bot...")
+    run_bot()
