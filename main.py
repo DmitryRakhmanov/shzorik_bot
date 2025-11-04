@@ -1,9 +1,14 @@
 import os
+import re
 import logging
-from datetime import datetime
+from datetime import datetime, timedelta
+from zoneinfo import ZoneInfo
+from telegram import Update
+from telegram.ext import Application, CommandHandler, ContextTypes, MessageHandler, filters
 from dotenv import load_dotenv
-from database import init_db
+from database import init_db, add_note, get_upcoming_reminders_window
 from flask import Flask, jsonify
+import threading
 
 # Настройка логирования
 logging.basicConfig(
@@ -15,6 +20,14 @@ logger = logging.getLogger(__name__)
 # Загружаем переменные окружения из .env
 load_dotenv()
 
+BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
+DATABASE_URL = os.environ.get("DATABASE_URL")
+TELEGRAM_CHANNEL_ID = os.environ.get("TELEGRAM_CHANNEL_ID")
+PORT = int(os.environ.get("PORT", 10000))
+
+if not BOT_TOKEN:
+    raise ValueError("Не задан TELEGRAM_BOT_TOKEN в .env файле")
+
 # Инициализация базы данных
 init_db()
 logger.info("Database initialized.")
@@ -24,12 +37,108 @@ app = Flask(__name__)
 
 @app.route('/')
 def home():
-    return "Reminder Bot API is running! Reminders are handled by GitHub Actions."
+    return "Reminder Bot is running with polling!"
 
 @app.route('/ping', methods=['GET'])
 def ping():
     return jsonify({"status": "OK", "timestamp": datetime.now().isoformat()}), 200
 
+# Парсинг напоминаний из сообщения
+def parse_reminder(text: str):
+    hashtags = re.findall(r"#[а-яА-ЯёЁa-zA-Z0-9_]+", text)
+    dt_match = re.search(r"@(\d{2}:\d{2}) (\d{2}-\d{2}-\d{4})", text)
+    reminder_date = None
+    if dt_match:
+        time_str, date_str = dt_match.groups()
+        try:
+            reminder_date = datetime.strptime(f"{date_str} {time_str}", "%d-%m-%Y %H:%M")
+            reminder_date = reminder_date.replace(tzinfo=ZoneInfo("Europe/Moscow"))
+        except ValueError:
+            return text, hashtags, None
+    return text, hashtags, reminder_date
+
+# Обработчик постов в канале
+async def handle_channel_post(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not update.channel_post:
+        return
+    text = update.channel_post.text
+    channel_id = update.channel_post.chat.id
+    cleaned_text, hashtags, reminder_date = parse_reminder(text)
+    if "#напоминание" not in hashtags or reminder_date is None:
+        return
+    note = add_note(channel_id, cleaned_text, " ".join(hashtags), reminder_date)
+    reply = f"✅ Напоминание сохранено: '{note.text}' на {note.reminder_date.astimezone(ZoneInfo('Europe/Moscow')).strftime('%H:%M %d-%m-%Y')}"
+    await update.channel_post.reply_text(reply)
+    logger.info(f"Saved reminder from channel: {note.text}")
+
+# Команда /start
+async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text("Привет! Я бот для напоминаний. Я сохраняю напоминания из канала и уведомляю о них. Используйте /upcoming для просмотра предстоящих напоминаний. Для помощи используйте /help.")
+
+# Команда /help
+async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    help_text = """
+    Доступные команды:
+    /start - Приветствие и начало работы
+    /help - Показать эту помощь
+    /upcoming - Показать предстоящие напоминания
+
+    Бот работает с каналом: сохраняет сообщения с #напоминание и @HH:MM DD-MM-YYYY, уведомляет за сутки.
+    """
+    await update.message.reply_text(help_text)
+
+# Команда для просмотра предстоящих напоминаний
+async def upcoming_notes_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
+    now = datetime.now(ZoneInfo("Europe/Moscow"))
+    notes = get_upcoming_reminders_window(now, now + timedelta(days=30), only_unsent=False)
+    
+    # Фильтруем заметки только для текущего пользователя
+    user_notes = [note for note in notes if note.user_id == user_id]
+    
+    if not user_notes:
+        await update.message.reply_text("Нет предстоящих напоминаний.")
+        return
+        
+    messages = []
+    for note in user_notes:
+        reminder_date_moscow = note.reminder_date.astimezone(ZoneInfo("Europe/Moscow"))
+        status = "✅ отправлено" if note.reminder_sent else "⏳ ожидает"
+        messages.append(f"🔔 {note.text}\n📅 {reminder_date_moscow.strftime('%H:%M %d-%m-%Y')} ({status})")
+    
+    await update.message.reply_text("\n\n".join(messages))
+
+# Запуск бота в отдельном потоке
+def run_bot():
+    """Запуск Telegram бота в отдельном потоке"""
+    try:
+        application = Application.builder().token(BOT_TOKEN).build()
+        
+        # Хендлеры
+        application.add_handler(MessageHandler(filters.TEXT & filters.ChatType.CHANNEL, handle_channel_post))
+        application.add_handler(CommandHandler("start", start_command, filters=filters.ChatType.PRIVATE))
+        application.add_handler(CommandHandler("help", help_command, filters=filters.ChatType.PRIVATE))
+        application.add_handler(CommandHandler("upcoming", upcoming_notes_command, filters=filters.ChatType.PRIVATE))
+
+        logger.info("Starting bot with polling...")
+        application.run_polling(allowed_updates=Update.ALL_TYPES, close_loop=False)
+    except Exception as e:
+        logger.error(f"Bot error: {e}")
+
+# Запуск Flask
+def run_flask():
+    """Запуск Flask сервера"""
+    app.run(host="0.0.0.0", port=PORT, debug=False, use_reloader=False)
+
 if __name__ == "__main__":
-    port = int(os.environ.get("PORT", 10000))
-    app.run(host="0.0.0.0", port=port, debug=False)
+    logger.info("Starting application...")
+    
+    # Запускаем бота в отдельном потоке
+    bot_thread = threading.Thread(target=run_bot)
+    bot_thread.daemon = True
+    bot_thread.start()
+    logger.info("Bot started in separate thread")
+    
+    # Запускаем Flask в основном потоке
+    logger.info("Starting Flask...")
+    run_flask()
