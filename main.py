@@ -1,6 +1,8 @@
 import os
 import re
 import logging
+import asyncio
+import threading
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 from telegram import Update
@@ -8,7 +10,6 @@ from telegram.ext import Application, CommandHandler, ContextTypes, MessageHandl
 from dotenv import load_dotenv
 from database import init_db, add_note, get_upcoming_reminders_window
 from flask import Flask, jsonify
-import threading
 
 # Настройка логирования
 logging.basicConfig(
@@ -108,37 +109,33 @@ async def upcoming_notes_command(update: Update, context: ContextTypes.DEFAULT_T
     
     await update.message.reply_text("\n\n".join(messages))
 
-# Запуск бота в отдельном потоке
-def run_bot():
-    """Запуск Telegram бота в отдельном потоке"""
-    try:
-        application = Application.builder().token(BOT_TOKEN).build()
-        
-        # Хендлеры
-        application.add_handler(MessageHandler(filters.TEXT & filters.ChatType.CHANNEL, handle_channel_post))
-        application.add_handler(CommandHandler("start", start_command, filters=filters.ChatType.PRIVATE))
-        application.add_handler(CommandHandler("help", help_command, filters=filters.ChatType.PRIVATE))
-        application.add_handler(CommandHandler("upcoming", upcoming_notes_command, filters=filters.ChatType.PRIVATE))
-
-        logger.info("Starting bot with polling...")
-        application.run_polling(allowed_updates=Update.ALL_TYPES, close_loop=False)
-    except Exception as e:
-        logger.error(f"Bot error: {e}")
-
-# Запуск Flask
+# Запуск Flask в отдельном потоке
 def run_flask():
-    """Запуск Flask сервера"""
+    """Запуск Flask сервера в отдельном потоке"""
     app.run(host="0.0.0.0", port=PORT, debug=False, use_reloader=False)
+
+# Основная асинхронная функция для запуска бота
+async def main():
+    application = Application.builder().token(BOT_TOKEN).build()
+    
+    # Хендлеры
+    application.add_handler(MessageHandler(filters.TEXT & filters.ChatType.CHANNEL, handle_channel_post))
+    application.add_handler(CommandHandler("start", start_command, filters=filters.ChatType.PRIVATE))
+    application.add_handler(CommandHandler("help", help_command, filters=filters.ChatType.PRIVATE))
+    application.add_handler(CommandHandler("upcoming", upcoming_notes_command, filters=filters.ChatType.PRIVATE))
+
+    logger.info("Starting bot with polling...")
+    await application.run_polling(allowed_updates=Update.ALL_TYPES)
 
 if __name__ == "__main__":
     logger.info("Starting application...")
     
-    # Запускаем бота в отдельном потоке
-    bot_thread = threading.Thread(target=run_bot)
-    bot_thread.daemon = True
-    bot_thread.start()
-    logger.info("Bot started in separate thread")
+    # Запускаем Flask в отдельном потоке
+    flask_thread = threading.Thread(target=run_flask)
+    flask_thread.daemon = True
+    flask_thread.start()
+    logger.info("Flask started in separate thread")
     
-    # Запускаем Flask в основном потоке
-    logger.info("Starting Flask...")
-    run_flask()
+    # Запускаем бота в основном потоке
+    logger.info("Starting bot...")
+    asyncio.run(main())
