@@ -1,39 +1,32 @@
 name: Reminder Bot
 
-# События: каждые 20 минут и ручной запуск
 on:
   schedule:
-    - cron: "*/20 * * * *"   # каждые 20 минут
+    - cron: "*/5 * * * *"   # каждые 5 минут
   workflow_dispatch:        # ручной запуск
 
 jobs:
-  run-bot:
+  check-reminders:
     runs-on: ubuntu-latest
 
     steps:
-      # 1. Забираем репозиторий
       - name: Checkout repo
         uses: actions/checkout@v4
 
-      # 2. Устанавливаем Python
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
           python-version: "3.12"
 
-      # 3. Устанавливаем зависимости
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
           pip install -r requirements.txt
 
-      # 4. Запуск бота с переменными из GitHub Secrets
-      - name: Run reminders
+      - name: Run reminder checks
         env:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           DATABASE_URL: ${{ secrets.DATABASE_URL }}
-          TZ: ${{ secrets.TZ }}                      # например Europe/Moscow
           TELEGRAM_CHANNEL_ID: ${{ secrets.TELEGRAM_CHANNEL_ID }}
-          LOG_LEVEL: INFO
         run: |
           python send_reminders.py

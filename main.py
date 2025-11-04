@@ -1,11 +1,9 @@
 import os
 import re
 import logging
-import time
-import threading
+import asyncio
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
-
 from telegram import Update, Bot
 from telegram.ext import Application, CommandHandler, ContextTypes, MessageHandler, filters
 from dotenv import load_dotenv
@@ -121,85 +119,78 @@ async def upcoming_notes_command(update: Update, context: ContextTypes.DEFAULT_T
     
     await update.message.reply_text("\n\n".join(messages))
 
-# Проверка напоминаний и отправка (простая синхронная версия)
-def check_reminders_sync():
-    """Простая синхронная проверка напоминаний"""
+# Проверка напоминаний и отправка (исправленная версия)
+async def check_reminders():
+    """Асинхронная проверка напоминаний"""
     try:
         now = datetime.now(ZoneInfo("Europe/Moscow"))
+        # Ищем напоминания на ближайшие 24 часа
         upcoming = get_upcoming_reminders_window(now, now + timedelta(days=1))
         
-        bot = Bot(BOT_TOKEN)
+        logger.info(f"Found {len(upcoming)} reminders to check")
         
         for note in upcoming:
             try:
                 reminder_date_moscow = note.reminder_date.astimezone(ZoneInfo("Europe/Moscow"))
                 message_text = f"🔔 Напоминание: '{note.text}' назначено на {reminder_date_moscow.strftime('%H:%M %d-%m-%Y')}"
                 
-                bot.send_message(
+                # Создаем нового бота для отправки
+                bot = Bot(BOT_TOKEN)
+                await bot.send_message(
                     chat_id=note.user_id,
                     text=message_text
                 )
                 mark_reminder_sent(note.id)
-                logger.info(f"Sent reminder to {note.user_id}: {note.text}")
+                logger.info(f"✅ Sent reminder to {note.user_id}: {note.text}")
+                
             except Exception as e:
-                logger.error(f"Failed to send reminder to {note.user_id}: {e}")
+                logger.error(f"❌ Failed to send reminder to {note.user_id}: {e}")
+                
     except Exception as e:
-        logger.error(f"Error in check_reminders_sync: {e}")
+        logger.error(f"❌ Error in check_reminders: {e}")
 
-# Функция для запуска периодических задач в отдельном потоке
-def run_periodic_tasks():
-    """Запуск периодических задач в бесконечном цикле"""
+# Периодическая проверка напоминаний
+async def periodic_check():
+    """Фоновая задача для периодической проверки напоминаний"""
     while True:
         try:
-            # Проверяем напоминания каждую минуту
-            check_reminders_sync()
-            
+            await check_reminders()
             # Самопинг каждые 10 минут
-            if int(time.time()) % 600 == 0:  # Каждые 10 минут
-                self_ping()
-                
-            time.sleep(60)  # Ждем 60 секунд
+            self_ping()
+            await asyncio.sleep(60)  # Проверяем каждую минуту
         except Exception as e:
-            logger.error(f"Error in periodic tasks: {e}")
-            time.sleep(60)
+            logger.error(f"Error in periodic_check: {e}")
+            await asyncio.sleep(60)
 
-# Запуск Flask
+# Запуск Flask в отдельном потоке
 def run_flask():
-    """Запуск Flask сервера"""
     app.run(host="0.0.0.0", port=PORT, debug=False, use_reloader=False)
 
-# Запуск бота
-def run_bot():
-    """Запуск Telegram бота"""
-    try:
-        application = Application.builder().token(BOT_TOKEN).build()
-        
-        # Хендлеры
-        application.add_handler(MessageHandler(filters.TEXT & filters.ChatType.CHANNEL, handle_channel_post))
-        application.add_handler(CommandHandler("start", start_command, filters=filters.ChatType.PRIVATE))
-        application.add_handler(CommandHandler("help", help_command, filters=filters.ChatType.PRIVATE))
-        application.add_handler(CommandHandler("upcoming", upcoming_notes_command, filters=filters.ChatType.PRIVATE))
-
-        logger.info("Starting bot with polling...")
-        application.run_polling(allowed_updates=Update.ALL_TYPES, close_loop=False)
-    except Exception as e:
-        logger.error(f"Bot error: {e}")
-
-if __name__ == "__main__":
-    logger.info("Starting application...")
+# Основная функция
+async def main():
+    # Создаем приложение бота
+    application = Application.builder().token(BOT_TOKEN).build()
     
-    # Запускаем периодические задачи в отдельном потоке
-    tasks_thread = threading.Thread(target=run_periodic_tasks)
-    tasks_thread.daemon = True
-    tasks_thread.start()
-    logger.info("Periodic tasks started")
-    
+    # Хендлеры
+    application.add_handler(MessageHandler(filters.TEXT & filters.ChatType.CHANNEL, handle_channel_post))
+    application.add_handler(CommandHandler("start", start_command, filters=filters.ChatType.PRIVATE))
+    application.add_handler(CommandHandler("help", help_command, filters=filters.ChatType.PRIVATE))
+    application.add_handler(CommandHandler("upcoming", upcoming_notes_command, filters=filters.ChatType.PRIVATE))
+
     # Запускаем Flask в отдельном потоке
+    import threading
     flask_thread = threading.Thread(target=run_flask)
     flask_thread.daemon = True
     flask_thread.start()
-    logger.info("Flask started")
-    
-    # Запускаем бота в основном потоке
-    logger.info("Starting bot...")
-    run_bot()
+    logger.info("Flask server started")
+
+    # Запускаем периодическую проверку как фоновую задачу
+    asyncio.create_task(periodic_check())
+    logger.info("Periodic reminder check started")
+
+    # Запускаем бота
+    logger.info("Starting bot with polling...")
+    await application.run_polling(allowed_updates=Update.ALL_TYPES)
+
+if __name__ == "__main__":
+    asyncio.run(main())
