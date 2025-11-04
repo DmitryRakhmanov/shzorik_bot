@@ -1,10 +1,8 @@
-# send_reminders.py
 import os
 import logging
 import datetime
 from datetime import timezone
 from zoneinfo import ZoneInfo
-
 from telegram import Bot
 from database import get_upcoming_reminders_window, mark_reminder_sent
 
@@ -37,9 +35,6 @@ DISPLAY_TZ = ZoneInfo(TZ_NAME)
 UTC = timezone.utc
 
 def parse_channel_id(raw: str):
-    """
-    Возвращает int если raw выглядит как числовой id (-100...), иначе строку (например @channelusername).
-    """
     raw = raw.strip()
     if raw.startswith('@'):
         return raw
@@ -49,9 +44,6 @@ def parse_channel_id(raw: str):
         return raw
 
 def to_display_time(dt_utc):
-    """
-    Принимает datetime (может быть naive или aware). Возвращает строку времени в DISPLAY_TZ.
-    """
     if dt_utc is None:
         return ""
     if dt_utc.tzinfo is None:
@@ -82,8 +74,10 @@ def main():
             display_time = to_display_time(note.reminder_date)
             text = f"🔔 Напоминание: '{note.text}' назначено на {display_time}."
             logger.info("Отправка напоминания для note id=%s: %s", note.id, text)
-            bot.send_message(chat_id=TELEGRAM_CHANNEL_ID, text=text)
-            # Пометка как отправленного
+            
+            # Используем правильную переменную
+            bot.send_message(chat_id=channel_id, text=text)
+            
             ok = mark_reminder_sent(note.id)
             if ok:
                 logger.info("Напоминание note id=%s отмечено как отправленное.", note.id)
