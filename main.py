@@ -119,77 +119,70 @@ async def upcoming_notes_command(update: Update, context: ContextTypes.DEFAULT_T
     
     await update.message.reply_text("\n\n".join(messages))
 
-# Проверка напоминаний и отправка (исправленная версия)
+# ИСПРАВЛЕННАЯ проверка напоминаний и отправка
 async def check_reminders():
-    """Асинхронная проверка напоминаний"""
+    """Асинхронная проверка напоминаний - ИСПРАВЛЕННАЯ ВЕРСИЯ"""
     try:
         now = datetime.now(ZoneInfo("Europe/Moscow"))
         # Ищем напоминания на ближайшие 24 часа
         upcoming = get_upcoming_reminders_window(now, now + timedelta(days=1))
         
-        logger.info(f"Found {len(upcoming)} reminders to check")
+        logger.info(f"🔍 Checking reminders. Found {len(upcoming)} to process")
+        
+        # Создаем бота один раз для всех отправок
+        bot = Bot(BOT_TOKEN)
         
         for note in upcoming:
             try:
                 reminder_date_moscow = note.reminder_date.astimezone(ZoneInfo("Europe/Moscow"))
                 message_text = f"🔔 Напоминание: '{note.text}' назначено на {reminder_date_moscow.strftime('%H:%M %d-%m-%Y')}"
                 
-                # Создаем нового бота для отправки
-                bot = Bot(BOT_TOKEN)
+                # Используем await для асинхронной отправки
                 await bot.send_message(
                     chat_id=note.user_id,
                     text=message_text
                 )
+                
                 mark_reminder_sent(note.id)
-                logger.info(f"✅ Sent reminder to {note.user_id}: {note.text}")
+                logger.info(f"✅ SUCCESS: Sent reminder to {note.user_id}: {note.text}")
                 
             except Exception as e:
-                logger.error(f"❌ Failed to send reminder to {note.user_id}: {e}")
+                logger.error(f"❌ FAILED to send reminder to {note.user_id}: {e}")
                 
     except Exception as e:
-        logger.error(f"❌ Error in check_reminders: {e}")
+        logger.error(f"💥 ERROR in check_reminders: {e}")
 
-# Периодическая проверка напоминаний
-async def periodic_check():
-    """Фоновая задача для периодической проверки напоминаний"""
+# Фоновая задача для периодической проверки
+async def background_reminder_check():
+    """Фоновая задача, которая работает постоянно"""
     while True:
         try:
             await check_reminders()
             # Самопинг каждые 10 минут
             self_ping()
-            await asyncio.sleep(60)  # Проверяем каждую минуту
-        except Exception as e:
-            logger.error(f"Error in periodic_check: {e}")
+            # Ждем 60 секунд перед следующей проверкой
             await asyncio.sleep(60)
-
-# Запуск Flask в отдельном потоке
-def run_flask():
-    app.run(host="0.0.0.0", port=PORT, debug=False, use_reloader=False)
+        except Exception as e:
+            logger.error(f"Background task error: {e}")
+            await asyncio.sleep(60)
 
 # Основная функция
 async def main():
     # Создаем приложение бота
     application = Application.builder().token(BOT_TOKEN).build()
     
-    # Хендлеры
+    # Хендлеры (ваша существующая логика)
     application.add_handler(MessageHandler(filters.TEXT & filters.ChatType.CHANNEL, handle_channel_post))
     application.add_handler(CommandHandler("start", start_command, filters=filters.ChatType.PRIVATE))
     application.add_handler(CommandHandler("help", help_command, filters=filters.ChatType.PRIVATE))
     application.add_handler(CommandHandler("upcoming", upcoming_notes_command, filters=filters.ChatType.PRIVATE))
 
-    # Запускаем Flask в отдельном потоке
-    import threading
-    flask_thread = threading.Thread(target=run_flask)
-    flask_thread.daemon = True
-    flask_thread.start()
-    logger.info("Flask server started")
-
-    # Запускаем периодическую проверку как фоновую задачу
-    asyncio.create_task(periodic_check())
-    logger.info("Periodic reminder check started")
+    # Запускаем фоновую задачу проверки напоминаний
+    asyncio.create_task(background_reminder_check())
+    logger.info("🚀 Background reminder checker started!")
 
     # Запускаем бота
-    logger.info("Starting bot with polling...")
+    logger.info("🤖 Starting bot with polling...")
     await application.run_polling(allowed_updates=Update.ALL_TYPES)
 
 if __name__ == "__main__":
