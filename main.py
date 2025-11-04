@@ -47,6 +47,9 @@ app = Flask(__name__)
 def ping():
     return jsonify({"status": "OK"}), 200  # Ответ на запрос от UptimeRobot
 
+if __name__ == "__main__":
+    app.run(host='0.0.0.0', port=WEBHOOK_PORT)
+
 # Парсинг напоминаний из сообщения
 def parse_reminder(text: str):
     hashtags = re.findall(r"#[а-яА-ЯёЁa-zA-Z0-9_]+", text)
