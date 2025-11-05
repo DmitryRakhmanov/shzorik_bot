@@ -10,26 +10,20 @@ from telegram import Update
 from telegram.ext import Application, CommandHandler, ContextTypes, MessageHandler, filters
 from dotenv import load_dotenv
 from database import init_db, add_note, get_upcoming_reminders_window, mark_reminder_sent
+from asgiref.wsgi import WsgiToAsgi  # Add this import
 try:
     from dotenv import load_dotenv
     load_dotenv()
 except ImportError:
     pass
 
-# Logging
-logging.basicConfig(format="%(asctime)s - %(name)s - %(levelname)s - %(message)s", level=logging.INFO)
-logger = logging.getLogger(__name__)
-
-# Env vars (unchanged)
+# Logging and env vars (unchanged)
 # ...
 
 # Flask app
 app = Flask(__name__)
 
-# Parse reminder (unchanged)
-# ...
-
-# Async handlers (unchanged)
+# Parse reminder and async handlers (unchanged)
 # ...
 
 async def main():
@@ -60,10 +54,8 @@ async def main():
         def ping():
             return jsonify({"status": "OK"}), 200
 
-        # Run Flask
-        app.run(host="0.0.0.0", port=PORT)
-
-    await application.stop()
+# Wrap Flask app for ASGI compatibility
+app = WsgiToAsgi(app)
 
 if __name__ == "__main__":
     asyncio.run(main())
