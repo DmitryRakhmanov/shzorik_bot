@@ -1,10 +1,8 @@
 name: Reminder Bot
-
 on:
   schedule:
     - cron: "*/5 * * * *"
   workflow_dispatch:
-
 jobs:
   check-reminders:
     runs-on: ubuntu-latest
@@ -16,11 +14,9 @@ jobs:
         with:
           python-version: "3.12"
       - name: Install dependencies
-        run: |
-          pip install -r requirements.txt
+        run: pip install -r requirements.txt
       - name: Run reminder checks
         env:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           DATABASE_URL: ${{ secrets.DATABASE_URL }}
-        run: |
-          python send_reminders.py
+        run: python send_reminders.py
