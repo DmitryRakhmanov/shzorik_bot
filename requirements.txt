@@ -1,8 +1,5 @@
 python-telegram-bot==20.7
 python-dotenv==1.0.0
-flask==2.3.3
 sqlalchemy==2.0.23
 psycopg2-binary==2.9.7
-requests==2.31.0
-uvicorn==0.23.2
-asgiref==3.7.2
+tzdata # Для ZoneInfo
