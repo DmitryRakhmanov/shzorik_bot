@@ -1,0 +1,18 @@
+services:
+  # Название вашего веб-сервиса
+  - type: web
+    name: shzorik-telegram-webhook
+    env: python
+    buildCommand: pip install -r requirements.txt
+    startCommand: python main.py
+    envVars:
+      # Важные переменные окружения
+      - key: TELEGRAM_BOT_TOKEN
+        sync: false
+      - key: DATABASE_URL
+        sync: false
+      - key: WEBHOOK_SECRET_TOKEN
+        sync: false
+      # Принудительное указание версии Python
+      - key: RENDER_PYTHON_VERSION
+        value: 3.12.3
