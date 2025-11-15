@@ -1,5 +1,7 @@
 import os
-from datetime import datetime
+import re # Не используется, но оставляем на всякий случай
+import logging # Не используется, но оставляем на всякий случай
+from datetime import datetime, timedelta # <-- timedelta для /upcoming
 from zoneinfo import ZoneInfo
 from sqlalchemy import create_engine, Column, Integer, String, DateTime, Boolean, select, update, BigInteger
 from sqlalchemy.orm import sessionmaker, declarative_base
@@ -15,10 +17,11 @@ if not DATABASE_URL:
     raise ValueError("DATABASE_URL не задан")
 
 # *** ФИНАЛЬНОЕ ИЗМЕНЕНИЕ ДЛЯ СОВМЕСТИМОСТИ С RENDER/PYTHON 3.13 ***
-# Заменяем стандартный префикс 'postgresql://' на 'postgresql+cffi://'
-# чтобы принудительно использовать драйвер psycopg2cffi, который не имеет проблем с компиляцией.
+# Переключаемся на драйвер asyncpg, который является чистым Python-драйвером 
+# и работает в среде Render без ошибок компиляции.
 if DATABASE_URL.startswith("postgresql://"):
-    DATABASE_URL = DATABASE_URL.replace("postgresql://", "postgresql+cffi://", 1)
+    # Заменяем схему для использования asyncpg
+    DATABASE_URL = DATABASE_URL.replace("postgresql://", "postgresql+asyncpg://", 1)
 # *******************************************************************
 
 engine = create_engine(DATABASE_URL)
@@ -56,8 +59,6 @@ def add_note(user_id: int, text: str, hashtags: str, reminder_date: datetime | N
         return note
     finally:
         session.close()
-
-from datetime import timedelta # Добавляем импорт timedelta здесь, чтобы не добавлять его в начале
 
 def get_upcoming_reminders_window(start_time_utc: datetime, end_time_utc: datetime, only_unsent: bool = True):
     """Ищет напоминания в UTC."""
