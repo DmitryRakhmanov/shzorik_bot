@@ -1,13 +1,14 @@
 import os
 import re
 import logging
-from datetime import datetime, timedelta # <-- Добавлен timedelta
+from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 from telegram import Update
 from telegram.ext import Application, CommandHandler, ContextTypes, MessageHandler, filters
 from dotenv import load_dotenv
 
 # Импортируем только нужные функции из database.py
+# (Убедитесь, что database.py теперь использует psycopg и postgresql+psycopg://)
 from database import init_db, add_note, get_upcoming_reminders_window
 
 # --- Настройка Логирования и Конфигурации ---
@@ -22,11 +23,13 @@ load_dotenv()
 BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
 WEBHOOK_URL = os.environ.get("WEBHOOK_URL")
 WEBHOOK_SECRET = os.environ.get("WEBHOOK_SECRET_TOKEN")
+# Убедитесь, что эта переменная окружения PORT установлена на Render (например, 10000)
 WEBHOOK_PORT = int(os.environ.get("PORT", 10000))
 TZ_NAME = os.environ.get("TZ", "Europe/Moscow") 
 APP_TZ = ZoneInfo(TZ_NAME)
 
 if not all([BOT_TOKEN, WEBHOOK_URL, WEBHOOK_SECRET]):
+    # Это сообщение может быть не совсем точным, если WEBHOOK_PORT отсутствует, но обычно достаточно
     raise ValueError("Не заданы все переменные для Webhook (BOT_TOKEN, WEBHOOK_URL, WEBHOOK_SECRET_TOKEN)")
 
 # --- Инициализация БД ---
@@ -34,6 +37,7 @@ try:
     init_db()
     logger.info("Database initialized successfully.")
 except Exception as e:
+    # Теперь эта ошибка должна быть исправлена
     logger.error(f"Failed to initialize database: {e}. Exiting.")
     exit(1)
 
@@ -112,6 +116,7 @@ async def upcoming_notes_command(update: Update, context: ContextTypes.DEFAULT_T
             messages.append(
                 f"• «{note.text}» - {reminder_date_local.strftime('%H:%M %d-%m-%Y')}"
             )
+        # Ограничиваем количество сообщений, чтобы не превысить лимит Telegram
         await update.message.reply_text("\n".join(messages[:15])) 
         
     except Exception as e:
@@ -121,7 +126,9 @@ async def upcoming_notes_command(update: Update, context: ContextTypes.DEFAULT_T
 # --- Запуск Бота ---
 
 def main():
-    application = Application.builder().token(BOT_TOKEN).build()
+    # ИСПРАВЛЕНИЕ: Создаем Application напрямую, минуя Application.builder().build(),
+    # чтобы избежать создания несовместимого объекта Updater в Python 3.13.
+    application = Application(BOT_TOKEN, update_queue=None, arbitrary_callback_data=False)
     
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND & filters.ChatType.CHANNEL, handle_channel_post))
     application.add_handler(CommandHandler("start", start_command, filters=filters.ChatType.PRIVATE))
