@@ -127,7 +127,7 @@ async def upcoming_notes_command(update: Update, context: ContextTypes.DEFAULT_T
 
 def main():
     # ИСПРАВЛЕНИЕ: Передаем BOT_TOKEN как именованный аргумент 'token='
-    application = Application(token=BOT_TOKEN, update_queue=None) 
+    application = Application(BOT_TOKEN, update_queue=None) 
     
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND & filters.ChatType.CHANNEL, handle_channel_post))
     application.add_handler(CommandHandler("start", start_command, filters=filters.ChatType.PRIVATE))
