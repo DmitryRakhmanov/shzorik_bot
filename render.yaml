@@ -1,8 +1,8 @@
 services:
-  # Название вашего веб-сервиса
   - type: web
     name: shzorik-telegram-webhook
-    env: python
+    runtime: python  # Change from 'env: python' to this
+    pythonVersion: "3.12"  # Add this line
     buildCommand: pip install -r requirements.txt
     startCommand: python main.py
     envVars:
@@ -13,6 +13,3 @@ services:
         sync: false
       - key: WEBHOOK_SECRET_TOKEN
         sync: false
-      # Принудительное указание версии Python
-      - key: RENDER_PYTHON_VERSION
-        value: 3.12.3
