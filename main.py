@@ -1,45 +1,43 @@
 import os
 import re
 import logging
-from datetime import datetime, timedelta
+from datetime import datetime
 from zoneinfo import ZoneInfo
 from telegram import Update
 from telegram.ext import Application, CommandHandler, ContextTypes, MessageHandler, filters
-from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from dotenv import load_dotenv
-from database import init_db, add_note, get_upcoming_reminders_window, mark_reminder_sent, Note
 
-# Настройка логирования
+# Импортируем только нужные функции из database.py
+from database import init_db, add_note, get_upcoming_reminders_window
+
+# --- Настройка Логирования и Конфигурации ---
 logging.basicConfig(
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
     level=logging.INFO
 )
-logging.getLogger('apscheduler').setLevel(logging.WARNING) # Убираем лишние логи от планировщика
 logger = logging.getLogger(__name__)
+load_dotenv() 
 
-# --- Загрузка конфигурации ---
-load_dotenv() # Загружаем .env файл (будет нужен на сервере)
-
+# Переменные окружения для Webhook
 BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
-DATABASE_URL = os.environ.get("DATABASE_URL")
-TZ_NAME = os.environ.get("TZ", "Europe/Moscow") # Часовой пояс
+WEBHOOK_URL = os.environ.get("WEBHOOK_URL")
+WEBHOOK_SECRET = os.environ.get("WEBHOOK_SECRET_TOKEN")
+WEBHOOK_PORT = int(os.environ.get("PORT", 10000))
+TZ_NAME = os.environ.get("TZ", "Europe/Moscow") 
 APP_TZ = ZoneInfo(TZ_NAME)
 
-if not BOT_TOKEN:
-    raise ValueError("Не задан TELEGRAM_BOT_TOKEN")
-if not DATABASE_URL:
-    raise ValueError("Не задан DATABASE_URL")
+if not all([BOT_TOKEN, WEBHOOK_URL, WEBHOOK_SECRET]):
+    raise ValueError("Не заданы все переменные для Webhook (BOT_TOKEN, WEBHOOK_URL, WEBHOOK_SECRET_TOKEN)")
 
 # --- Инициализация БД ---
 try:
     init_db()
     logger.info("Database initialized successfully.")
 except Exception as e:
-    logger.error(f"Failed to initialize database: {e}")
-    # В реальном приложении здесь можно было бы выйти, но мы попробуем продолжить
-    # exit(1)
+    logger.error(f"Failed to initialize database: {e}. Exiting.")
+    exit(1)
 
-# --- Функции парсинга и хендлеры ---
+# --- Вспомогательные функции ---
 
 def parse_reminder(text: str):
     """Парсит текст, ищет #напоминание и дату @HH:MM DD-MM-YYYY"""
@@ -50,21 +48,19 @@ def parse_reminder(text: str):
     if dt_match:
         time_str, date_str = dt_match.groups()
         try:
-            # Парсим "локальное" время
+            # Парсим "локальное" время и привязываем к часовому поясу приложения
             naive_dt = datetime.strptime(f"{date_str} {time_str}", "%d-%m-%Y %H:%M")
-            # Привязываем к часовому поясу приложения
             reminder_date = naive_dt.replace(tzinfo=APP_TZ)
-            logger.info(f"Parsed date: {reminder_date}")
         except ValueError:
-            logger.warning(f"Invalid date format: {dt_match.group(0)}")
             return text, " ".join(hashtags), None
             
-    # Убираем из текста теги и дату
     cleaned_text = re.sub(r"#[а-яА-ЯёЁa-zA-Z0-9_]+", "", text).strip()
     if dt_match:
         cleaned_text = cleaned_text.replace(dt_match.group(0), "").strip()
         
     return cleaned_text, hashtags, reminder_date
+
+# --- Хендлеры сообщений и команд ---
 
 async def handle_channel_post(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Обработчик постов в канале"""
@@ -81,12 +77,11 @@ async def handle_channel_post(update: Update, context: ContextTypes.DEFAULT_TYPE
         return
         
     try:
-        # Важно: В базу данных дата должна уходить в UTC
+        # В базу данных дата должна уходить в UTC
         reminder_date_utc = reminder_date.astimezone(ZoneInfo("UTC"))
         
         note = add_note(channel_id, cleaned_text, " ".join(hashtags), reminder_date_utc)
         
-        # Для ответа пользователю снова конвертируем в его зону
         reply_date_str = reminder_date.strftime('%H:%M %d-%m-%Y')
         reply = f"✅ Напоминание сохранено: «{note.text}» на {reply_date_str}"
         await update.channel_post.reply_text(reply)
@@ -97,26 +92,12 @@ async def handle_channel_post(update: Update, context: ContextTypes.DEFAULT_TYPE
         await update.channel_post.reply_text(f"❌ Ошибка сохранения: {e}")
 
 async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Команда /start"""
-    await update.message.reply_text("Привет! Я бот для напоминаний. Используйте /upcoming для просмотра предстоящих напоминаний.")
-
-async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Команда /help"""
-    help_text = """
-    Доступные команды:
-    /start - Приветствие
-    /help - Помощь
-    /upcoming - Показать предстоящие напоминания
-    
-    Бот отслеживает посты в канале с форматом:
-    Текст #напоминание @HH:MM DD-MM-YYYY
-    """
-    await update.message.reply_text(help_text)
+    await update.message.reply_text("Привет! Я бот для напоминаний. Используйте /upcoming для просмотра.")
 
 async def upcoming_notes_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Команда /upcoming"""
     now_utc = datetime.now(ZoneInfo("UTC"))
-    end_of_time = now_utc + timedelta(days=365*10) # Смотрим далеко вперед
+    end_of_time = now_utc + timedelta(days=365) # Смотрим на год вперед
     
     try:
         notes = get_upcoming_reminders_window(now_utc, end_of_time, only_unsent=True)
@@ -127,85 +108,33 @@ async def upcoming_notes_command(update: Update, context: ContextTypes.DEFAULT_T
             
         messages = ["🔔 Предстоящие напоминания:"]
         for note in notes:
-            # note.reminder_date должен быть в UTC
             reminder_date_local = note.reminder_date.astimezone(APP_TZ)
             messages.append(
                 f"• «{note.text}» - {reminder_date_local.strftime('%H:%M %d-%m-%Y')}"
             )
-        await update.message.reply_text("\n".join(messages[:15])) # Ограничим вывод
+        await update.message.reply_text("\n".join(messages[:15])) 
         
     except Exception as e:
         logger.error(f"Error fetching upcoming notes: {e}")
         await update.message.reply_text(f"❌ Ошибка получения напоминаний: {e}")
 
-# --- Задача для Планировщика ---
-
-async def check_reminders(context: ContextTypes.DEFAULT_TYPE):
-    """
-    Проверяет БД на наличие напоминаний, которые нужно отправить.
-    Вызывается планировщиком.
-    """
-    # Ищем напоминания, которые должны сработать в ближайшие 24 часа
-    # (по вашему изначальному ТЗ)
-    now_utc = datetime.now(ZoneInfo("UTC"))
-    window_end_utc = now_utc + timedelta(days=1)
-    
-    logger.info(f"Checking reminders... Window: {now_utc} to {window_end_utc}")
-    
-    try:
-        upcoming = get_upcoming_reminders_window(now_utc, window_end_utc, only_unsent=True)
-        if not upcoming:
-            logger.info("No reminders to send in this window.")
-            return
-
-        for note in upcoming:
-            try:
-                # Конвертируем UTC из базы в локальное время для отображения
-                reminder_date_local = note.reminder_date.astimezone(APP_TZ)
-                
-                await context.bot.send_message(
-                    chat_id=note.user_id, # user_id это ID канала (или юзера)
-                    text=f"🔔 Напоминание: «{note.text}» назначено на {reminder_date_local.strftime('%H:%M %d-%m-%Y')}"
-                )
-                mark_reminder_sent(note.id)
-                logger.info(f"Sent reminder {note.id} to {note.user_id}")
-                
-            except Exception as e:
-                logger.error(f"Failed to send reminder {note.id}: {e}")
-                
-    except Exception as e:
-        logger.error(f"Critical error in check_reminders job: {e}")
-
 # --- Запуск Бота ---
 
 def main():
-    logger.info("Starting bot...")
-    
-    # Создаем приложение
     application = Application.builder().token(BOT_TOKEN).build()
-
-    # Добавляем JobQueue (встроенный в PTB планировщик, лучше APScheduler для PTB)
-    # Вместо APScheduler, используем встроенный JobQueue. Это проще и надежнее.
-    job_queue = application.job_queue
     
-    # Запускаем `check_reminders` каждые 60 секунд. 
-    # `first=10` значит, что первая проверка будет через 10 секунд после старта.
-    job_queue.run_repeating(check_reminders, interval=60, first=10)
-    
-    # Хендлер для постов в канале
-    application.add_handler(MessageHandler(
-        filters.TEXT & ~filters.COMMAND & filters.ChatType.CHANNEL, 
-        handle_channel_post
-    ))
-
-    # Команды (ограничены приватными чатами)
+    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND & filters.ChatType.CHANNEL, handle_channel_post))
     application.add_handler(CommandHandler("start", start_command, filters=filters.ChatType.PRIVATE))
-    application.add_handler(CommandHandler("help", help_command, filters=filters.ChatType.PRIVATE))
     application.add_handler(CommandHandler("upcoming", upcoming_notes_command, filters=filters.ChatType.PRIVATE))
 
-    # Запускаем бота в режиме polling (постоянное подключение)
-    logger.info("Starting polling...")
-    application.run_polling(allowed_updates=Update.ALL_TYPES)
+    logger.info("Starting bot with webhooks...")
+    application.run_webhook(
+        listen="0.0.0.0",
+        port=WEBHOOK_PORT,
+        url_path="/telegram",
+        webhook_url=WEBHOOK_URL,
+        secret_token=WEBHOOK_SECRET
+    )
 
 if __name__ == "__main__":
     main()
