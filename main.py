@@ -1,7 +1,7 @@
 import os
 import re
 import logging
-from datetime import datetime
+from datetime import datetime, timedelta # <-- Добавлен timedelta
 from zoneinfo import ZoneInfo
 from telegram import Update
 from telegram.ext import Application, CommandHandler, ContextTypes, MessageHandler, filters

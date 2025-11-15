@@ -14,6 +14,13 @@ DATABASE_URL = os.environ.get("DATABASE_URL")
 if not DATABASE_URL:
     raise ValueError("DATABASE_URL не задан")
 
+# *** ФИНАЛЬНОЕ ИЗМЕНЕНИЕ ДЛЯ СОВМЕСТИМОСТИ С RENDER/PYTHON 3.13 ***
+# Заменяем стандартный префикс 'postgresql://' на 'postgresql+cffi://'
+# чтобы принудительно использовать драйвер psycopg2cffi, который не имеет проблем с компиляцией.
+if DATABASE_URL.startswith("postgresql://"):
+    DATABASE_URL = DATABASE_URL.replace("postgresql://", "postgresql+cffi://", 1)
+# *******************************************************************
+
 engine = create_engine(DATABASE_URL)
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 Base = declarative_base()
@@ -49,6 +56,8 @@ def add_note(user_id: int, text: str, hashtags: str, reminder_date: datetime | N
         return note
     finally:
         session.close()
+
+from datetime import timedelta # Добавляем импорт timedelta здесь, чтобы не добавлять его в начале
 
 def get_upcoming_reminders_window(start_time_utc: datetime, end_time_utc: datetime, only_unsent: bool = True):
     """Ищет напоминания в UTC."""
