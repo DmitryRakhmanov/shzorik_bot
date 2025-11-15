@@ -1,7 +1,5 @@
 import os
-import re # Не используется, но оставляем на всякий случай
-import logging # Не используется, но оставляем на всякий случай
-from datetime import datetime, timedelta # <-- timedelta для /upcoming
+from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 from sqlalchemy import create_engine, Column, Integer, String, DateTime, Boolean, select, update, BigInteger
 from sqlalchemy.orm import sessionmaker, declarative_base
@@ -16,12 +14,12 @@ DATABASE_URL = os.environ.get("DATABASE_URL")
 if not DATABASE_URL:
     raise ValueError("DATABASE_URL не задан")
 
-# *** ФИНАЛЬНОЕ ИЗМЕНЕНИЕ ДЛЯ СОВМЕСТИМОСТИ С RENDER/PYTHON 3.13 ***
-# Переключаемся на драйвер asyncpg, который является чистым Python-драйвером 
-# и работает в среде Render без ошибок компиляции.
+# *** КРИТИЧЕСКОЕ ИЗМЕНЕНИЕ ДЛЯ СОВМЕСТИМОСТИ С SSL (psycopg v3) ***
+# Переключаемся на современный драйвер 'psycopg', который корректно 
+# обрабатывает параметры SSL и URL-адреса от хостинга (Neon).
 if DATABASE_URL.startswith("postgresql://"):
-    # Заменяем схему для использования asyncpg
-    DATABASE_URL = DATABASE_URL.replace("postgresql://", "postgresql+asyncpg://", 1)
+    # Заменяем схему для использования psycopg
+    DATABASE_URL = DATABASE_URL.replace("postgresql://", "postgresql+psycopg://", 1)
 # *******************************************************************
 
 engine = create_engine(DATABASE_URL)
