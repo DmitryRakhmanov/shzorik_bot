@@ -66,7 +66,7 @@ def create_calendar(year=None, month=None):
     if month < 12:
         row.append(InlineKeyboardButton("→", callback_data=f"cal:{year}:{month+1}"))
     else:
-        row.append(InlineKeyboardButton("→", callback_data=f"cal:{year+1}:1}"))
+        row.append(InlineKeyboardButton("→", callback_data=f"cal:{year+1}:1"))
     keyboard.append(row)
 
     # Дни недели
