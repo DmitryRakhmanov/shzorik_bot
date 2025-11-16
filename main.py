@@ -86,13 +86,18 @@ def create_time_keyboard():
     keyboard.append([InlineKeyboardButton("Отмена", callback_data="cancel")])
     return InlineKeyboardMarkup(keyboard)
 
-# --- /notify диалог ---
+# --- /notify диалог (для канала) ---
 async def start_notify(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    if not update.channel_post:
+    if update.channel_post:
+        chat = update.channel_post
+    elif update.message:
+        chat = update.message
+    else:
         return ConversationHandler.END
+
     context.user_data.clear()
-    context.user_data["channel_id"] = update.channel_post.chat.id
-    msg = await update.channel_post.reply_text("Выберите дату события:", reply_markup=create_calendar())
+    context.user_data["channel_id"] = chat.chat.id
+    msg = await chat.reply_text("Выберите дату события:", reply_markup=create_calendar())
     context.user_data["last_msg_id"] = msg.message_id
     return DATE
 
@@ -148,11 +153,12 @@ async def select_time(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int
     return TIME
 
 async def enter_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    if not update.channel_post:
+    chat = update.channel_post or update.message
+    if not chat:
         return TEXT
-    text = update.channel_post.text.strip()
+    text = chat.text.strip()
     if not text:
-        await update.channel_post.reply_text("Текст не может быть пустым. Попробуйте снова:")
+        await chat.reply_text("Текст не может быть пустым. Попробуйте снова:")
         return TEXT
     context.user_data["text"] = text
 
@@ -171,7 +177,7 @@ async def enter_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
         f"Событие: {event_dt.strftime('%H:%M %d-%m-%Y')}\n"
         f"Напоминание: за 24ч ({remind_dt.strftime('%H:%M %d-%m-%Y')})"
     )
-    msg = await update.channel_post.reply_text(message, reply_markup=reply_markup)
+    msg = await chat.reply_text(message, reply_markup=reply_markup)
     context.user_data["last_msg_id"] = msg.message_id
     return CONFIRM
 
@@ -202,11 +208,6 @@ async def confirm(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
 
     return CONFIRM
 
-async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    if update.channel_post:
-        await update.channel_post.reply_text("Создание напоминания отменено.")
-    return ConversationHandler.END
-
 # --- Остальные команды ---
 async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("Привет! Я бот для напоминаний. Используйте /upcoming для просмотра предстоящих напоминаний.")
@@ -219,13 +220,13 @@ async def upcoming_notes_command(update: Update, context: ContextTypes.DEFAULT_T
         if not notes:
             await update.message.reply_text("Нет предстоящих напоминаний.")
             return
-        messages = ["🔔 Предстоящие напоминания:"]
+        messages = ["Предстоящие напоминания:"]
         for note in notes:
             reminder_date_local = note.reminder_date.astimezone(APP_TZ)
             messages.append(f"• «{note.text}» - {reminder_date_local.strftime('%H:%M %d-%m-%Y')}")
         await update.message.reply_text("\n".join(messages[:15]))
     except Exception as e:
-        await update.message.reply_text(f"❌ Ошибка: {e}")
+        await update.message.reply_text(f"Ошибка: {e}")
 
 async def echo(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(f"Echo: {update.message.text}")
@@ -235,26 +236,29 @@ def main():
     update_queue = asyncio.Queue()
     application = Application.builder().token(BOT_TOKEN).update_queue(update_queue).build()
 
-    # /notify диалог
+    # /notify — работает и в канале, и в ЛС
     conv_handler = ConversationHandler(
-        entry_points=[CommandHandler("notify", start_notify, filters=filters.ChatType.CHANNEL)],
+        entry_points=[
+            CommandHandler("notify", start_notify),  # Без фильтра — работает везде
+        ],
         states={
             DATE: [CallbackQueryHandler(select_date)],
             TIME: [CallbackQueryHandler(select_time)],
-            TEXT: [MessageHandler(filters.TEXT & ~filters.COMMAND & filters.ChatType.CHANNEL, enter_text)],
+            TEXT: [MessageHandler(filters.TEXT & ~filters.COMMAND, enter_text)],
             CONFIRM: [CallbackQueryHandler(confirm)],
         },
-        fallbacks=[CommandHandler("cancel", cancel, filters=filters.ChatType.CHANNEL)],
-        per_chat=True,
-        per_message=True,
-        per_user=False,
+        fallbacks=[CommandHandler("cancel", lambda u, c: ConversationHandler.END)],
+        per_chat=False,
+        per_user=True,
+        per_message=False,
         allow_reentry=True,
     )
 
+    # Добавляем все хендлеры
     application.add_handler(conv_handler)
-    application.add_handler(CommandHandler("start", start_command, filters=filters.ChatType.PRIVATE))
-    application.add_handler(CommandHandler("upcoming", upcoming_notes_command, filters=filters.ChatType.PRIVATE))
-    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND & filters.ChatType.PRIVATE, echo))
+    application.add_handler(CommandHandler("start", start_command))
+    application.add_handler(CommandHandler("upcoming", upcoming_notes_command))
+    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, echo))
 
     logger.info(f"Using WEBHOOK_URL: {WEBHOOK_URL}")
     logger.info("Starting bot with webhooks...")
