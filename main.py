@@ -1,6 +1,7 @@
 import os
 import re
 import logging
+import asyncio  # Новый импорт для Queue
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 from telegram import Update
@@ -27,6 +28,11 @@ APP_TZ = ZoneInfo(TZ_NAME)
 
 if not all([BOT_TOKEN, WEBHOOK_URL, WEBHOOK_SECRET]):
     raise ValueError("Не заданы все переменные для Webhook (BOT_TOKEN, WEBHOOK_URL, WEBHOOK_SECRET_TOKEN)")
+
+# Автоматическое исправление WEBHOOK_URL: добавляем /telegram, если нет
+if not WEBHOOK_URL.endswith("/telegram"):
+    WEBHOOK_URL = WEBHOOK_URL.rstrip("/") + "/telegram"
+    logger.info(f"Автоматически скорректирован WEBHOOK_URL: {WEBHOOK_URL}")
 
 # --- Инициализация БД ---
 try:
@@ -60,28 +66,28 @@ def parse_reminder(text: str):
 # --- Хендлеры сообщений и команд ---
 
 async def handle_channel_post(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not update.channel_post or not update.channel_post.text:
-        return
-        
-    text = update.channel_post.text
-    chat_id = update.channel_post.chat.id
-    
-    cleaned_text, hashtags, event_date = parse_reminder(text)
-    
-    if "#напоминание" not in hashtags or event_date is None:
-        logger.info("Ignoring post: no #напоминание or valid date found.")
-        return
-    
-    now = datetime.now(APP_TZ)
-    if event_date < now + timedelta(days=1):
-        await update.channel_post.reply_text("❌ Дата события должна быть хотя бы через сутки.")
-        return
-        
+    logger.info(f"Received channel post update: {update.to_dict()}")  # Лог для отладки
     try:
+        if not update.channel_post or not update.channel_post.text:
+            return
+            
+        text = update.channel_post.text
+        chat_id = update.channel_post.chat.id
+        
+        cleaned_text, hashtags, event_date = parse_reminder(text)
+        
+        if "#напоминание" not in hashtags or event_date is None:
+            logger.info("Ignoring post: no #напоминание or valid date found.")
+            return
+        
+        now = datetime.now(APP_TZ)
+        if event_date < now + timedelta(days=1):
+            await update.channel_post.reply_text("❌ Дата события должна быть хотя бы через сутки.")
+            return
+            
         remind_at = event_date - timedelta(days=1)
         remind_at_utc = remind_at.astimezone(ZoneInfo("UTC"))
         
-        # Добавляем дату события в текст для ясности в напоминании
         text_with_event = f"{cleaned_text} (событие: {event_date.strftime('%H:%M %d-%m-%Y')})"
         
         note = add_note(chat_id, text_with_event, hashtags, remind_at_utc)
@@ -93,18 +99,23 @@ async def handle_channel_post(update: Update, context: ContextTypes.DEFAULT_TYPE
         logger.info(f"Saved reminder for channel {chat_id}: {note.text}")
         
     except Exception as e:
-        logger.error(f"Error saving note for channel: {e}")
-        await update.channel_post.reply_text(f"❌ Ошибка сохранения: {e}")
+        logger.error(f"Error in handle_channel_post: {e}")
+        if update.channel_post:
+            await update.channel_post.reply_text(f"❌ Ошибка: {e}")
 
 async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("Привет! Я бот для напоминаний. Используйте /upcoming для просмотра предстоящих напоминаний.")
+    logger.info(f"Received /start update: {update.to_dict()}")
+    try:
+        await update.message.reply_text("Привет! Я бот для напоминаний. Используйте /upcoming для просмотра предстоящих напоминаний.")
+    except Exception as e:
+        logger.error(f"Error in start_command: {e}")
 
 async def upcoming_notes_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Команда /upcoming"""
-    now_utc = datetime.now(ZoneInfo("UTC"))
-    end_of_time = now_utc + timedelta(days=365) # Смотрим на год вперед
-    
+    logger.info(f"Received /upcoming update: {update.to_dict()}")
     try:
+        now_utc = datetime.now(ZoneInfo("UTC"))
+        end_of_time = now_utc + timedelta(days=365)
+        
         notes = get_upcoming_reminders_window(now_utc, end_of_time, only_unsent=True)
         
         if not notes:
@@ -120,31 +131,35 @@ async def upcoming_notes_command(update: Update, context: ContextTypes.DEFAULT_T
         await update.message.reply_text("\n".join(messages[:15])) 
         
     except Exception as e:
-        logger.error(f"Error fetching upcoming notes: {e}")
+        logger.error(f"Error in upcoming_notes_command: {e}")
         await update.message.reply_text(f"❌ Ошибка получения напоминаний: {e}")
 
-# Новый: Эхо-хендлер для отладки в ЛС (логирует и отвечает на текст)
 async def echo(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    logger.info(f"Received update in private chat: {update.to_dict()}")
-    await update.message.reply_text(f"Echo: {update.message.text}")
+    logger.info(f"Received echo update in private chat: {update.to_dict()}")
+    try:
+        await update.message.reply_text(f"Echo: {update.message.text}")
+    except Exception as e:
+        logger.error(f"Error in echo: {e}")
 
-# Новый: Обработчик ошибок
 async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
     logger.error(f"Exception while handling an update: {context.error}")
 
 # --- Запуск Бота ---
 
 def main():
-    # ИСПРАВЛЕНИЕ: Используем builder для создания Application (совместимо с v20+ и Python 3.13)
-    application = Application.builder().token(BOT_TOKEN).update_queue(None).build()
+    # ИСПРАВЛЕНИЕ: Создаём реальную asyncio.Queue для update_queue (решает NoneType ошибки и 500 Internal Server Error)
+    update_queue = asyncio.Queue()
+    
+    application = Application.builder().token(BOT_TOKEN).update_queue(update_queue).build()
     
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND & filters.ChatType.CHANNEL, handle_channel_post))
     application.add_handler(CommandHandler("start", start_command, filters=filters.ChatType.PRIVATE))
-    application.add_handler(CommandHandler("help", start_command, filters=filters.ChatType.PRIVATE))  # Новый: /help как копия /start
+    application.add_handler(CommandHandler("help", start_command, filters=filters.ChatType.PRIVATE))
     application.add_handler(CommandHandler("upcoming", upcoming_notes_command, filters=filters.ChatType.PRIVATE))
-    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND & filters.ChatType.PRIVATE, echo))  # Новый: Для отладки ЛС
-    application.add_error_handler(error_handler)  # Новый: Логи ошибок
+    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND & filters.ChatType.PRIVATE, echo))
+    application.add_error_handler(error_handler)
     
+    logger.info(f"Using WEBHOOK_URL: {WEBHOOK_URL}")
     logger.info("Starting bot with webhooks...")
     application.run_webhook(
         listen="0.0.0.0",
