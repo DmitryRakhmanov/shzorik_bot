@@ -127,7 +127,7 @@ async def upcoming_notes_command(update: Update, context: ContextTypes.DEFAULT_T
 
 def main():
     # ИСПРАВЛЕНИЕ: Используем builder для создания Application (совместимо с v20+ и Python 3.13)
-    application = Application.builder().token(BOT_TOKEN).build()  # update_queue=None не обязателен, но если нужно, добавьте .update_queue(None)
+    application = Application.builder().token(BOT_TOKEN).update_queue(None).build()
     
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND & filters.ChatType.CHANNEL, handle_channel_post))
     application.add_handler(CommandHandler("start", start_command, filters=filters.ChatType.PRIVATE))
