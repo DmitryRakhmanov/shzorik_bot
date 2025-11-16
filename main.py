@@ -1,7 +1,7 @@
 import os
 import re
 import logging
-import asyncio  # Новый импорт для Queue
+import asyncio
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 from telegram import Update
@@ -66,13 +66,13 @@ def parse_reminder(text: str):
 # --- Хендлеры сообщений и команд ---
 
 async def handle_channel_post(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    logger.info(f"Received channel post update: {update.to_dict()}")  # Лог для отладки
+    logger.info(f"Received channel post update: {update.to_dict()}")
     try:
         if not update.channel_post or not update.channel_post.text:
             return
             
         text = update.channel_post.text
-        chat_id = update.channel_post.chat.id
+        chat_id = update.channel_post.chat.id  # Это ID канала, используем как user_id
         
         cleaned_text, hashtags, event_date = parse_reminder(text)
         
@@ -90,7 +90,7 @@ async def handle_channel_post(update: Update, context: ContextTypes.DEFAULT_TYPE
         
         text_with_event = f"{cleaned_text} (событие: {event_date.strftime('%H:%M %d-%m-%Y')})"
         
-        note = add_note(chat_id, text_with_event, hashtags, remind_at_utc)
+        note = add_note(chat_id, text_with_event, hashtags, remind_at_utc)  # Изменено: user_id=chat_id
         
         remind_date_str = remind_at.strftime('%H:%M %d-%m-%Y')
         event_date_str = event_date.strftime('%H:%M %d-%m-%Y')
@@ -147,7 +147,7 @@ async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE) -> N
 # --- Запуск Бота ---
 
 def main():
-    # ИСПРАВЛЕНИЕ: Создаём реальную asyncio.Queue для update_queue (решает NoneType ошибки и 500 Internal Server Error)
+    # Создаём asyncio.Queue для update_queue
     update_queue = asyncio.Queue()
     
     application = Application.builder().token(BOT_TOKEN).update_queue(update_queue).build()

@@ -25,7 +25,7 @@ Base = declarative_base()
 class Note(Base):
     __tablename__ = "notes"
     id = Column(Integer, primary_key=True, index=True)
-    chat_id = Column(BigInteger, nullable=False)  # chat_id для канала (отрицательный ID)
+    user_id = Column(BigInteger, nullable=False)  # Изменено обратно на user_id для совместимости с существующей БД
     text = Column(String, nullable=False)
     hashtags = Column(String, nullable=True)
     reminder_date = Column(DateTime(timezone=True), nullable=True) 
@@ -35,10 +35,10 @@ class Note(Base):
 def init_db():
     Base.metadata.create_all(bind=engine)
 
-def add_note(chat_id: int, text: str, hashtags: str, reminder_date: datetime | None):
+def add_note(user_id: int, text: str, hashtags: str, reminder_date: datetime | None):
     session = SessionLocal()
     try:
-        note = Note(chat_id=chat_id, text=text, hashtags=hashtags, reminder_date=reminder_date, reminder_sent=False)
+        note = Note(user_id=user_id, text=text, hashtags=hashtags, reminder_date=reminder_date, reminder_sent=False)
         session.add(note)
         session.commit()
         session.refresh(note)
