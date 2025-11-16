@@ -14,13 +14,9 @@ DATABASE_URL = os.environ.get("DATABASE_URL")
 if not DATABASE_URL:
     raise ValueError("DATABASE_URL не задан")
 
-# *** КРИТИЧЕСКОЕ ИЗМЕНЕНИЕ ДЛЯ СОВМЕСТИМОСТИ С SSL (psycopg v3) ***
-# Переключаемся на современный драйвер 'psycopg', который корректно 
-# обрабатывает параметры SSL и URL-адреса от хостинга (Neon).
+# ИСПРАВЛЕНИЕ: Используем psycopg (v3) для совместимости с SSL и Python 3.13
 if DATABASE_URL.startswith("postgresql://"):
-    # Заменяем схему для использования psycopg
     DATABASE_URL = DATABASE_URL.replace("postgresql://", "postgresql+psycopg://", 1)
-# *******************************************************************
 
 engine = create_engine(DATABASE_URL)
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
@@ -29,28 +25,20 @@ Base = declarative_base()
 class Note(Base):
     __tablename__ = "notes"
     id = Column(Integer, primary_key=True, index=True)
-    
-    # ID канала/пользователя может быть очень большим
-    user_id = Column(BigInteger, nullable=False) 
-    
+    chat_id = Column(BigInteger, nullable=False)  # chat_id для канала (отрицательный ID)
     text = Column(String, nullable=False)
     hashtags = Column(String, nullable=True)
-    
-    # ВАЖНО: Храним дату в UTC
     reminder_date = Column(DateTime(timezone=True), nullable=True) 
     reminder_sent = Column(Boolean, default=False)
-    
-    # ВАЖНО: Храним дату в UTC
     created_at = Column(DateTime(timezone=True), default=lambda: datetime.now(ZoneInfo("UTC")))
 
 def init_db():
     Base.metadata.create_all(bind=engine)
 
-def add_note(user_id: int, text: str, hashtags: str, reminder_date: datetime | None):
-    """Сохраняет заметку. reminder_date должен быть в UTC."""
+def add_note(chat_id: int, text: str, hashtags: str, reminder_date: datetime | None):
     session = SessionLocal()
     try:
-        note = Note(user_id=user_id, text=text, hashtags=hashtags, reminder_date=reminder_date, reminder_sent=False)
+        note = Note(chat_id=chat_id, text=text, hashtags=hashtags, reminder_date=reminder_date, reminder_sent=False)
         session.add(note)
         session.commit()
         session.refresh(note)
@@ -59,7 +47,6 @@ def add_note(user_id: int, text: str, hashtags: str, reminder_date: datetime | N
         session.close()
 
 def get_upcoming_reminders_window(start_time_utc: datetime, end_time_utc: datetime, only_unsent: bool = True):
-    """Ищет напоминания в UTC."""
     session = SessionLocal()
     try:
         stmt = select(Note).where(
