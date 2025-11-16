@@ -12,10 +12,8 @@ from dotenv import load_dotenv
 
 from database import init_db, add_note, get_upcoming_reminders_window
 
-# --- Состояния диалога ---
 DATE, TIME, TEXT, CONFIRM = range(4)
 
-# --- Настройка ---
 logging.basicConfig(format="%(asctime)s - %(name)s - %(levelname)s - %(message)s", level=logging.INFO)
 logger = logging.getLogger(__name__)
 load_dotenv()
@@ -41,7 +39,6 @@ except Exception as e:
     logger.error(f"Failed to initialize database: {e}")
     exit(1)
 
-# --- Календарь ---
 def create_calendar(year=None, month=None):
     now = datetime.now(APP_TZ)
     if year is None: year = now.year
@@ -87,57 +84,53 @@ def create_time_keyboard():
     keyboard.append([InlineKeyboardButton("Отмена", callback_data="cancel")])
     return InlineKeyboardMarkup(keyboard)
 
-# --- /notify диалог (для канала) ---
 async def start_notify(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     logger.info("start_notify called")
-    if update.channel_post:
-        chat = update.channel_post.chat
-    else:
+    chat_id = update.channel_post.chat.id if update.channel_post else update.message.chat.id if update.message else None
+    if not chat_id:
         return ConversationHandler.END
 
     context.user_data.clear()
-    context.user_data["channel_id"] = chat.id
-    msg = await update.channel_post.reply_text("Выберите дату события:", reply_markup=create_calendar())
+    context.user_data["channel_id"] = chat_id
+    msg = await context.bot.send_message(chat_id=chat_id, text="Выберите дату события:", reply_markup=create_calendar())
     context.user_data["last_msg_id"] = msg.message_id
     return DATE
 
 async def select_date(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    logger.info("select_date called")
     query = update.callback_query
     await query.answer()
     data = query.data
 
     if data == "cancel":
-        await query.edit_message_text("Создание напоминания отменено.")
+        await context.bot.edit_message_text(chat_id=query.message.chat.id, message_id=query.message.message_id, text="Создание напоминания отменено.")
         return ConversationHandler.END
 
     if data.startswith("cal:"):
         year, month = map(int, data.split(":")[1:])
-        await query.edit_message_reply_markup(reply_markup=create_calendar(year, month))
+        await context.bot.edit_message_reply_markup(chat_id=query.message.chat.id, message_id=query.message.message_id, reply_markup=create_calendar(year, month))
         return DATE
 
     if data.startswith("cal_day:"):
         _, year, month, day = data.split(":")
         year, month, day = int(year), int(month), int(day)
         context.user_data["event_date"] = date(year, month, day)
-        await query.edit_message_text("Выберите время события:", reply_markup=create_time_keyboard())
+        await context.bot.edit_message_text(chat_id=query.message.chat.id, message_id=query.message.message_id, text="Выберите время события:", reply_markup=create_time_keyboard())
         return TIME
 
     return DATE
 
 async def select_time(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    logger.info("select_time called")
     query = update.callback_query
     await query.answer()
     data = query.data
 
     if data == "cancel":
-        await query.edit_message_text("Создание напоминания отменено.")
+        await context.bot.edit_message_text(chat_id=query.message.chat.id, message_id=query.message.message_id, text="Создание напоминания отменено.")
         return ConversationHandler.END
 
     if data.startswith("time_h:"):
         context.user_data["hour"] = int(data.split(":")[1])
-        await query.edit_message_reply_markup(reply_markup=create_time_keyboard())
+        await context.bot.edit_message_reply_markup(chat_id=query.message.chat.id, message_id=query.message.message_id, reply_markup=create_time_keyboard())
         return TIME
     if data.startswith("time_m:"):
         context.user_data["minute"] = int(data.split(":")[1])
@@ -149,48 +142,40 @@ async def select_time(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int
         event_date = context.user_data["event_date"]
         event_dt = datetime.combine(event_date, datetime.min.time()).replace(hour=hour, minute=minute, tzinfo=APP_TZ)
         context.user_data["event_dt"] = event_dt
-        await query.edit_message_text("Напишите текст напоминания:")
+        await context.bot.edit_message_text(chat_id=query.message.chat.id, message_id=query.message.message_id, text="Напишите текст напоминания:")
         return TEXT
 
     return TIME
 
 async def enter_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    logger.info("enter_text called")
-    if not update.channel_post:
+    chat_id = update.channel_post.chat.id if update.channel_post else update.message.chat.id if update.message else None
+    text = update.channel_post.text.strip() if update.channel_post else update.message.text.strip() if update.message else None
+    if not chat_id or not text:
         return TEXT
-    text = update.channel_post.text.strip()
-    if not text:
-        await update.channel_post.reply_text("Текст не может быть пустым. Попробуйте снова:")
-        return TEXT
-    context.user_data["text"] = text
 
+    if not text:
+        await context.bot.send_message(chat_id=chat_id, text="Текст не может быть пустым. Попробуйте снова:")
+        return TEXT
+
+    context.user_data["text"] = text
     event_dt = context.user_data["event_dt"]
     remind_dt = event_dt - timedelta(days=1)
 
-    keyboard = [
-        [InlineKeyboardButton("Сохранить", callback_data="save")],
-        [InlineKeyboardButton("Отмена", callback_data="cancel")]
-    ]
+    keyboard = [[InlineKeyboardButton("Сохранить", callback_data="save")], [InlineKeyboardButton("Отмена", callback_data="cancel")]]
     reply_markup = InlineKeyboardMarkup(keyboard)
 
-    message = (
-        f"Подтвердите:\n"
-        f"«{text}»\n"
-        f"Событие: {event_dt.strftime('%H:%M %d-%m-%Y')}\n"
-        f"Напоминание: за 24ч ({remind_dt.strftime('%H:%M %d-%m-%Y')})"
-    )
-    msg = await update.channel_post.reply_text(message, reply_markup=reply_markup)
+    message = f"Подтвердите:\n«{text}»\nСобытие: {event_dt.strftime('%H:%M %d-%m-%Y')}\nНапоминание: за 24ч ({remind_dt.strftime('%H:%M %d-%m-%Y')})"
+    msg = await context.bot.send_message(chat_id=chat_id, text=message, reply_markup=reply_markup)
     context.user_data["last_msg_id"] = msg.message_id
     return CONFIRM
 
 async def confirm(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    logger.info("confirm called")
     query = update.callback_query
     await query.answer()
     data = query.data
 
     if data == "cancel":
-        await query.edit_message_text("Создание напоминания отменено.")
+        await context.bot.edit_message_text(chat_id=query.message.chat.id, message_id=query.message.message_id, text="Создание напоминания отменено.")
         return ConversationHandler.END
 
     if data == "save":
@@ -201,91 +186,54 @@ async def confirm(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
 
         add_note(channel_id, text, "#напоминание", remind_dt_utc)
 
-        final_message = (
-            f"Напоминание сохранено! «{text}»\n"
-            f"Событие: {event_dt.strftime('%H:%M %d-%m-%Y')}\n"
-            f"Напоминание: за 24ч ({(event_dt - timedelta(days=1)).strftime('%H:%M %d-%m-%Y')})"
-        )
-        await query.edit_message_text(final_message)
+        final_message = f"Напоминание сохранено! «{text}»\nСобытие: {event_dt.strftime('%H:%M %d-%m-%Y')}\nНапоминание: за 24ч ({(event_dt - timedelta(days=1)).strftime('%H:%M %d-%m-%Y')})"
+        await context.bot.edit_message_text(chat_id=query.message.chat.id, message_id=query.message.message_id, text=final_message)
         return ConversationHandler.END
 
     return CONFIRM
 
-async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    logger.info("cancel called")
-    if update.channel_post:
-        await update.channel_post.reply_text("Создание напоминания отменено.")
-    return ConversationHandler.END
-
-# --- Команды для ЛС ---
 async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    logger.info("start_command called")
     await update.message.reply_text("Привет! Я бот для напоминаний. Используйте /upcoming для просмотра предстоящих напоминаний.")
 
 async def upcoming_notes_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    logger.info("upcoming_notes_command called")
     now_utc = datetime.now(ZoneInfo("UTC"))
     end_of_time = now_utc + timedelta(days=365)
-    try:
-        notes = get_upcoming_reminders_window(now_utc, end_of_time, only_unsent=True)
-        if not notes:
-            await update.message.reply_text("Нет предстоящих напоминаний.")
-            return
-        messages = ["🔔 Предстоящие напоминания:"]
-        for note in notes:
-            reminder_date_local = note.reminder_date.astimezone(APP_TZ)
-            messages.append(f"• «{note.text}» - {reminder_date_local.strftime('%H:%M %d-%m-%Y')}")
-        await update.message.reply_text("\n".join(messages[:15]))
-    except Exception as e:
-        await update.message.reply_text(f"❌ Ошибка: {e}")
+    notes = get_upcoming_reminders_window(now_utc, end_of_time, only_unsent=True)
+    if not notes:
+        await update.message.reply_text("Нет предстоящих напоминаний.")
+        return
+    messages = ["Предстоящие напоминания:"]
+    for note in notes:
+        reminder_date_local = note.reminder_date.astimezone(APP_TZ)
+        messages.append(f"• «{note.text}» - {reminder_date_local.strftime('%H:%M %d-%m-%Y')}")
+    await update.message.reply_text("\n".join(messages[:15]))
 
 async def echo(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    logger.info("echo called")
     await update.message.reply_text(f"Echo: {update.message.text}")
 
-# --- Запуск ---
 def main():
     update_queue = asyncio.Queue()
     application = Application.builder().token(BOT_TOKEN).update_queue(update_queue).build()
 
-    # --- ConversationHandler ТОЛЬКО для канала ---
-    conv_handler_channel = ConversationHandler(
-        entry_points=[MessageHandler(filters.Regex(r"^/notify$") & filters.ChatType.CHANNEL, start_notify)],
-        states={
-            DATE: [CallbackQueryHandler(select_date)],
-            TIME: [CallbackQueryHandler(select_time)],
-            TEXT: [MessageHandler(filters.TEXT & ~filters.COMMAND & filters.ChatType.CHANNEL, enter_text)],
-            CONFIRM: [CallbackQueryHandler(confirm)],
-        },
-        fallbacks=[MessageHandler(filters.Regex(r"^/cancel$") & filters.ChatType.CHANNEL, cancel)],
-        per_chat=True,
-        per_message=False,
-        allow_reentry=True,
-    )
-
-    # --- Хендлеры для ЛС ---
-    conv_handler_private = ConversationHandler(
+    conv_handler = ConversationHandler(
         entry_points=[CommandHandler("notify", start_notify)],
         states={
             DATE: [CallbackQueryHandler(select_date)],
             TIME: [CallbackQueryHandler(select_time)],
-            TEXT: [MessageHandler(filters.TEXT & ~filters.COMMAND & filters.ChatType.PRIVATE, enter_text)],
+            TEXT: [MessageHandler(filters.TEXT & ~filters.COMMAND, enter_text)],
             CONFIRM: [CallbackQueryHandler(confirm)],
         },
-        fallbacks=[CommandHandler("cancel", cancel)],
+        fallbacks=[CommandHandler("cancel", lambda u, c: ConversationHandler.END)],
         per_user=True,
+        per_chat=False,
         allow_reentry=True,
     )
 
-    # --- Добавляем хендлеры ---
-    application.add_handler(conv_handler_channel)  # Для канала
-    application.add_handler(conv_handler_private)  # Для ЛС
-    application.add_handler(CommandHandler("start", start_command, filters=filters.ChatType.PRIVATE))
-    application.add_handler(CommandHandler("upcoming", upcoming_notes_command, filters=filters.ChatType.PRIVATE))
-    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND & filters.ChatType.PRIVATE, echo))
+    application.add_handler(conv_handler)
+    application.add_handler(CommandHandler("start", start_command))
+    application.add_handler(CommandHandler("upcoming", upcoming_notes_command))
+    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, echo))
 
-    logger.info(f"Using WEBHOOK_URL: {WEBHOOK_URL}")
-    logger.info("Starting bot with webhooks...")
     application.run_webhook(
         listen="0.0.0.0",
         port=WEBHOOK_PORT,
