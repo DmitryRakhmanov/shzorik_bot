@@ -97,7 +97,7 @@ async def handle_channel_post(update: Update, context: ContextTypes.DEFAULT_TYPE
         await update.channel_post.reply_text(f"❌ Ошибка сохранения: {e}")
 
 async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("Привет! Я бот для напоминаний. Используйте /upcoming для просмотра.")
+    await update.message.reply_text("Привет! Я бот для напоминаний. Используйте /upcoming для просмотра предстоящих напоминаний.")
 
 async def upcoming_notes_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Команда /upcoming"""
@@ -123,6 +123,15 @@ async def upcoming_notes_command(update: Update, context: ContextTypes.DEFAULT_T
         logger.error(f"Error fetching upcoming notes: {e}")
         await update.message.reply_text(f"❌ Ошибка получения напоминаний: {e}")
 
+# Новый: Эхо-хендлер для отладки в ЛС (логирует и отвечает на текст)
+async def echo(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    logger.info(f"Received update in private chat: {update.to_dict()}")
+    await update.message.reply_text(f"Echo: {update.message.text}")
+
+# Новый: Обработчик ошибок
+async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
+    logger.error(f"Exception while handling an update: {context.error}")
+
 # --- Запуск Бота ---
 
 def main():
@@ -131,8 +140,11 @@ def main():
     
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND & filters.ChatType.CHANNEL, handle_channel_post))
     application.add_handler(CommandHandler("start", start_command, filters=filters.ChatType.PRIVATE))
+    application.add_handler(CommandHandler("help", start_command, filters=filters.ChatType.PRIVATE))  # Новый: /help как копия /start
     application.add_handler(CommandHandler("upcoming", upcoming_notes_command, filters=filters.ChatType.PRIVATE))
-
+    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND & filters.ChatType.PRIVATE, echo))  # Новый: Для отладки ЛС
+    application.add_error_handler(error_handler)  # Новый: Логи ошибок
+    
     logger.info("Starting bot with webhooks...")
     application.run_webhook(
         listen="0.0.0.0",
