@@ -87,21 +87,19 @@ def create_time_keyboard():
     keyboard.append([InlineKeyboardButton("Отмена", callback_data="cancel")])
     return InlineKeyboardMarkup(keyboard)
 
-# --- Удаление сообщения ---
+# --- Удаление ---
 async def delete_message(context: ContextTypes.DEFAULT_TYPE, chat_id, message_id):
     try:
         await context.bot.delete_message(chat_id=chat_id, message_id=message_id)
     except BadRequest as e:
-        if "message to delete not found" not in str(e):
-            logger.warning(f"Failed to delete message: {e}")
+        if "not found" not in str(e).lower():
+            logger.warning(f"Delete failed: {e}")
 
 # --- Диалог ---
 async def start_notify(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     chat_id = update.effective_chat.id
-    user_id = update.effective_user.id
     context.user_data.clear()
     context.user_data["channel_id"] = chat_id
-    context.user_data["user_id"] = user_id
     context.user_data["messages_to_delete"] = []
 
     msg = await context.bot.send_message(chat_id=chat_id, text="Выберите дату события:", reply_markup=create_calendar())
@@ -125,7 +123,7 @@ async def select_date(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int
         try:
             await context.bot.edit_message_reply_markup(chat_id=chat_id, message_id=message_id, reply_markup=create_calendar(year, month))
         except BadRequest as e:
-            if "not modified" not in str(e):
+            if "not modified" not in str(e).lower():
                 raise
         return DATE
 
@@ -176,7 +174,6 @@ async def select_time(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int
 async def enter_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     chat_id = update.effective_chat.id
     text = update.effective_message.text.strip()
-
     if not text:
         await update.effective_message.reply_text("Текст не может быть пустым. Попробуйте снова:")
         return TEXT
@@ -185,22 +182,14 @@ async def enter_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     event_dt = context.user_data["event_dt"]
     remind_dt = event_dt - timedelta(days=1)
 
-    keyboard = [
-        [InlineKeyboardButton("Сохранить", callback_data="save")],
-        [InlineKeyboardButton("Отмена", callback_data="cancel")]
-    ]
+    keyboard = [[InlineKeyboardButton("Сохранить", callback_data="save")], [InlineKeyboardButton("Отмена", callback_data="cancel")]]
     reply_markup = InlineKeyboardMarkup(keyboard)
 
-    message = (
-        f"Подтвердите:\n"
-        f"«{text}»\n"
-        f"Событие: {event_dt.strftime('%H:%M %d-%m-%Y')}\n"
-        f"Напоминание: за 24ч ({remind_dt.strftime('%H:%M %d-%m-%Y')})"
-    )
+    message = f"Подтвердите:\n«{text}»\nСобытие: {event_dt.strftime('%H:%M %d-%m-%Y')}\nНапоминание: за 24ч ({remind_dt.strftime('%H:%M %d-%m-%Y')})"
     msg = await context.bot.send_message(chat_id=chat_id, text=message, reply_markup=reply_markup)
     context.user_data["messages_to_delete"].append(msg.message_id)
 
-    # Удаляем предыдущее сообщение (время)
+    # Удаляем предыдущее (время)
     if len(context.user_data["messages_to_delete"]) > 1:
         await delete_message(context, chat_id, context.user_data["messages_to_delete"][-2])
 
@@ -223,25 +212,20 @@ async def confirm(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
         text = context.user_data["text"]
         event_dt = context.user_data["event_dt"]
         remind_dt_utc = (event_dt - timedelta(days=1)).astimezone(ZoneInfo("UTC"))
-
         add_note(channel_id, text, "#напоминание", remind_dt_utc)
 
-        final_message = (
-            f"Напоминание сохранено! «{text}»\n"
-            f"Событие: {event_dt.strftime('%H:%M %d-%m-%Y')}\n"
-            f"Напоминание: за 24ч ({(event_dt - timedelta(days=1)).strftime('%H:%M %d-%m-%Y')})"
-        )
+        final_message = f"Напоминание сохранено! «{text}»\nСобытие: {event_dt.strftime('%H:%M %d-%m-%Y')}\nНапоминание: за 24ч ({(event_dt - timedelta(days=1)).strftime('%H:%M %d-%m-%Y')})"
         await query.edit_message_text(final_message)
 
-        # Удаляем все промежуточные сообщения
-        for msg_id in context.user_data["messages_to_delete"][:-1]:  # кроме финального
+        # Удаляем все, кроме финального
+        for msg_id in context.user_data["messages_to_delete"][:-1]:
             await delete_message(context, chat_id, msg_id)
 
         return ConversationHandler.END
 
     return CONFIRM
 
-# --- Остальные команды ---
+# --- Команды ЛС ---
 async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("Привет! Я бот для напоминаний. Используйте /upcoming для просмотра предстоящих напоминаний.")
 
@@ -261,10 +245,20 @@ async def upcoming_notes_command(update: Update, context: ContextTypes.DEFAULT_T
 def main():
     application = Application.builder().token(BOT_TOKEN).build()
 
+    # === /notify: отдельно для канала и ЛС ===
+    # В канале: только текст "/notify"
+    notify_channel = MessageHandler(
+        filters.Regex(r"^/notify$") & filters.ChatType.CHANNEL,
+        start_notify
+    )
+    # В ЛС: команда /notify
+    notify_private = MessageHandler(
+        filters.Regex(r"^/notify$") & filters.ChatType.PRIVATE,
+        start_notify
+    )
+
     conv_handler = ConversationHandler(
-        entry_points=[
-            MessageHandler(filters.COMMAND & (filters.ChatType.CHANNEL | filters.ChatType.PRIVATE), start_notify)
-        ],
+        entry_points=[notify_channel, notify_private],
         states={
             DATE: [CallbackQueryHandler(select_date)],
             TIME: [CallbackQueryHandler(select_time)],
@@ -272,14 +266,19 @@ def main():
             CONFIRM: [CallbackQueryHandler(confirm)],
         },
         fallbacks=[MessageHandler(filters.Regex(r"^/cancel$"), lambda u, c: ConversationHandler.END)],
-        per_user=True,
-        per_chat=False,
+        per_chat=True,
+        per_user=False,
         allow_reentry=True,
     )
 
+    # === Остальные команды (только ЛС) ===
+    start_handler = MessageHandler(filters.Regex(r"^/start$"), start_command)
+    upcoming_handler = MessageHandler(filters.Regex(r"^/upcoming$"), upcoming_notes_command)
+
+    # === Добавляем в правильном порядке ===
     application.add_handler(conv_handler)
-    application.add_handler(MessageHandler(filters.COMMAND & filters.ChatType.PRIVATE, start_command))
-    application.add_handler(MessageHandler(filters.Regex(r"^/upcoming$"), upcoming_notes_command))
+    application.add_handler(start_handler)
+    application.add_handler(upcoming_handler)
 
     application.run_webhook(
         listen="0.0.0.0",
