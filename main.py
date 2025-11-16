@@ -61,7 +61,7 @@ def create_calendar(year=None, month=None):
     if month > 1:
         row.append(InlineKeyboardButton("←", callback_data=f"cal:{year}:{month-1}"))
     else:
-        row.append(InlineKeyboardButton("←", callback_data=f"cal:{year-1}:12}"))
+        row.append(InlineKeyboardButton("←", callback_data=f"cal:{year-1}:12"))
     row.append(InlineKeyboardButton(f"{month_names[month-1]} {year}", callback_data="ignore"))
     if month < 12:
         row.append(InlineKeyboardButton("→", callback_data=f"cal:{year}:{month+1}"))
