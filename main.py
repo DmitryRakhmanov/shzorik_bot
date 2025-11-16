@@ -1,5 +1,4 @@
 import os
-import re
 import logging
 import asyncio
 from datetime import datetime, timedelta, date
@@ -11,7 +10,7 @@ from telegram.ext import (
 )
 from dotenv import load_dotenv
 
-from database import init_db, add_note
+from database import init_db, add_note, get_upcoming_reminders_window
 
 # --- Состояния диалога ---
 DATE, TIME, TEXT, CONFIRM = range(4)
@@ -42,37 +41,30 @@ except Exception as e:
     logger.error(f"Failed to initialize database: {e}")
     exit(1)
 
-# --- Утилиты для календаря ---
+# --- Календарь ---
 def create_calendar(year=None, month=None):
     now = datetime.now(APP_TZ)
     if year is None: year = now.year
     if month is None: month = now.month
-    # Первый день месяца
     first = date(year, month, 1)
-    # Последний день месяца
-    last = date(year, month + 1, 1) - timedelta(days=1) if month < 12 else date(year + 1, 1, 1) - timedelta(days=1)
-    # День недели первого дня (0=Пн)
-    start_weekday = first.weekday()  # 0=Mon
+    last = (date(year, month + 1, 1) - timedelta(days=1)) if month < 12 else (date(year + 1, 1, 1) - timedelta(days=1))
+    start_weekday = first.weekday()
 
     keyboard = []
-    # Заголовок: ← Месяц Год →
-    month_names = ["Янв", "Фев", "Мар", "Апр", "Май", "Июн", "Июл", "Авг", "Сен", "Окт", "Ноя", "Дек"]
     row = []
     if month > 1:
         row.append(InlineKeyboardButton("←", callback_data=f"cal:{year}:{month-1}"))
     else:
         row.append(InlineKeyboardButton("←", callback_data=f"cal:{year-1}:12"))
-    row.append(InlineKeyboardButton(f"{month_names[month-1]} {year}", callback_data="ignore"))
+    row.append(InlineKeyboardButton(f"{['Янв','Фев','Мар','Апр','Май','Июн','Июл','Авг','Сен','Окт','Ноя','Дек'][month-1]} {year}", callback_data="ignore"))
     if month < 12:
         row.append(InlineKeyboardButton("→", callback_data=f"cal:{year}:{month+1}"))
     else:
         row.append(InlineKeyboardButton("→", callback_data=f"cal:{year+1}:1"))
     keyboard.append(row)
 
-    # Дни недели
     keyboard.append([InlineKeyboardButton(d, callback_data="ignore") for d in ["Пн", "Вт", "Ср", "Чт", "Пт", "Сб", "Вс"]])
 
-    # Дни
     row = [""] * start_weekday
     for day in range(1, last.day + 1):
         row.append(str(day))
@@ -83,7 +75,6 @@ def create_calendar(year=None, month=None):
         row.extend([""] * (7 - len(row)))
         keyboard.append([InlineKeyboardButton(d if d != "" else " ", callback_data=f"cal_day:{year}:{month}:{d}" if d != "" else "ignore") for d in row])
 
-    # Отмена
     keyboard.append([InlineKeyboardButton("Отмена", callback_data="cancel")])
     return InlineKeyboardMarkup(keyboard)
 
@@ -92,16 +83,17 @@ def create_time_keyboard():
     minutes = [InlineKeyboardButton(f"{m:02d}", callback_data=f"time_m:{m:02d}") for m in range(0, 60, 5)]
     keyboard = [hours[i:i+6] for i in range(0, 24, 6)]
     keyboard += [minutes[i:i+6] for i in range(0, 12, 6)]
-    keyboard.append([InlineKeyboardButton("Отмена", callback_data="	cancel")])
+    keyboard.append([InlineKeyboardButton("Отмена", callback_data="cancel")])
     return InlineKeyboardMarkup(keyboard)
 
-# --- Диалог /notify ---
+# --- /notify диалог ---
 async def start_notify(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     if not update.channel_post:
         return ConversationHandler.END
     context.user_data.clear()
     context.user_data["channel_id"] = update.channel_post.chat.id
-    await update.channel_post.reply_text("Выберите дату события:", reply_markup=create_calendar())
+    msg = await update.channel_post.reply_text("Выберите дату события:", reply_markup=create_calendar())
+    context.user_data["last_msg_id"] = msg.message_id
     return DATE
 
 async def select_date(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
@@ -166,7 +158,6 @@ async def enter_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
 
     event_dt = context.user_data["event_dt"]
     remind_dt = event_dt - timedelta(days=1)
-    remind_dt_utc = remind_dt.astimezone(ZoneInfo("UTC"))
 
     keyboard = [
         [InlineKeyboardButton("Сохранить", callback_data="save")],
@@ -180,7 +171,8 @@ async def enter_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
         f"Событие: {event_dt.strftime('%H:%M %d-%m-%Y')}\n"
         f"Напоминание: за 24ч ({remind_dt.strftime('%H:%M %d-%m-%Y')})"
     )
-    await update.channel_post.reply_text(message, reply_markup=reply_markup)
+    msg = await update.channel_post.reply_text(message, reply_markup=reply_markup)
+    context.user_data["last_msg_id"] = msg.message_id
     return CONFIRM
 
 async def confirm(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
@@ -198,7 +190,7 @@ async def confirm(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
         event_dt = context.user_data["event_dt"]
         remind_dt_utc = (event_dt - timedelta(days=1)).astimezone(ZoneInfo("UTC"))
 
-        note = add_note(channel_id, text, "#напоминание", remind_dt_utc)
+        add_note(channel_id, text, "#напоминание", remind_dt_utc)
 
         final_message = (
             f"Напоминание сохранено! «{text}»\n"
@@ -215,6 +207,29 @@ async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
         await update.channel_post.reply_text("Создание напоминания отменено.")
     return ConversationHandler.END
 
+# --- Остальные команды ---
+async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text("Привет! Я бот для напоминаний. Используйте /upcoming для просмотра предстоящих напоминаний.")
+
+async def upcoming_notes_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    now_utc = datetime.now(ZoneInfo("UTC"))
+    end_of_time = now_utc + timedelta(days=365)
+    try:
+        notes = get_upcoming_reminders_window(now_utc, end_of_time, only_unsent=True)
+        if not notes:
+            await update.message.reply_text("Нет предстоящих напоминаний.")
+            return
+        messages = ["🔔 Предстоящие напоминания:"]
+        for note in notes:
+            reminder_date_local = note.reminder_date.astimezone(APP_TZ)
+            messages.append(f"• «{note.text}» - {reminder_date_local.strftime('%H:%M %d-%m-%Y')}")
+        await update.message.reply_text("\n".join(messages[:15]))
+    except Exception as e:
+        await update.message.reply_text(f"❌ Ошибка: {e}")
+
+async def echo(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text(f"Echo: {update.message.text}")
+
 # --- Запуск ---
 def main():
     update_queue = asyncio.Queue()
@@ -229,11 +244,17 @@ def main():
             TEXT: [MessageHandler(filters.TEXT & ~filters.COMMAND & filters.ChatType.CHANNEL, enter_text)],
             CONFIRM: [CallbackQueryHandler(confirm)],
         },
-        fallbacks=[CommandHandler("cancel", cancel)],
-        per_message=False,
+        fallbacks=[CommandHandler("cancel", cancel, filters=filters.ChatType.CHANNEL)],
+        per_chat=True,
+        per_message=True,
+        per_user=False,
+        allow_reentry=True,
     )
 
     application.add_handler(conv_handler)
+    application.add_handler(CommandHandler("start", start_command, filters=filters.ChatType.PRIVATE))
+    application.add_handler(CommandHandler("upcoming", upcoming_notes_command, filters=filters.ChatType.PRIVATE))
+    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND & filters.ChatType.PRIVATE, echo))
 
     logger.info(f"Using WEBHOOK_URL: {WEBHOOK_URL}")
     logger.info("Starting bot with webhooks...")
