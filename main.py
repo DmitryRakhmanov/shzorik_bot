@@ -194,9 +194,9 @@ async def handle_channel_post(update: Update, context: ContextTypes.DEFAULT_TYPE
         # try delete user's /notify message (works in channels/groups if bot has rights)
         await try_delete_message(context.bot, chat_id, msg_id)
 
-        # schedule deletion of bot's service message after short delay (1s) to remove clutter quickly
+        # schedule deletion of bot's service message after short delay (30s) to remove clutter quickly
         try:
-            asyncio.create_task(schedule_delete(context.bot, chat_id, bot_msg_id, 1))
+            asyncio.create_task(schedule_delete(context.bot, chat_id, bot_msg_id, 30))
         except Exception:
             logger.debug("Failed to schedule quick deletion; falling back to scheduled deletion")
 
