@@ -194,13 +194,17 @@ async def handle_channel_post(update: Update, context: ContextTypes.DEFAULT_TYPE
         # try delete user's /notify message (works in channels/groups if bot has rights)
         await try_delete_message(context.bot, chat_id, msg_id)
 
-        # schedule deletion of bot's service message after delay
+        # schedule deletion of bot's service message after short delay (1s) to remove clutter quickly
         try:
-            # schedule a background task on the bot's loop
+            asyncio.create_task(schedule_delete(context.bot, chat_id, bot_msg_id, 1))
+        except Exception:
+            logger.debug("Failed to schedule quick deletion; falling back to scheduled deletion")
+
+        # also schedule deletion after DELETE_DELAY_SECONDS as fallback (if quick delete didn't work or user needs more time)
+        try:
             asyncio.create_task(schedule_delete(context.bot, chat_id, bot_msg_id, DELETE_DELAY_SECONDS))
         except Exception:
-            # if scheduling fails, try immediate deletion after short sleep (best effort)
-            logger.debug("Failed to create background task to delete service message")
+            logger.debug("Failed to schedule fallback deletion")
 
         return
 
@@ -314,7 +318,9 @@ async def callback_calendar(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return STATE_CHOOSE_DATE
 
         context.user_data["event_date"] = chosen
-        await query.edit_message_text(f"Вы выбрали: {chosen.strftime('%d-%m-%Y')}\n\nВведите время в формате HH:MM (например, 14:30):")
+        # include Cancel button in the next prompt
+        cancel_kb = InlineKeyboardMarkup([[InlineKeyboardButton("Отмена", callback_data="CANCEL")]])
+        await query.edit_message_text(f"Вы выбрали: {chosen.strftime('%d-%m-%Y')}\n\nВведите время в формате HH:MM (например, 14:30):", reply_markup=cancel_kb)
         return STATE_INPUT_TIME
 
     return
@@ -326,13 +332,13 @@ async def input_time_handler(update: Update, context: ContextTypes.DEFAULT_TYPE)
 
     m = re.match(r"^([0-2]?\d):([0-5]\d)$", text)
     if not m:
-        await update.message.reply_text("Неверный формат времени. Введите в формате HH:MM (например, 09:05 или 21:30).")
+        await update.message.reply_text("Неверный формат времени. Введите в формате HH:MM (например, 09:05 или 21:30).", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("Отмена", callback_data="CANCEL")]]))
         return STATE_INPUT_TIME
 
     hour = int(m.group(1))
     minute = int(m.group(2))
     if hour > 23:
-        await update.message.reply_text("Час должен быть от 00 до 23.")
+        await update.message.reply_text("Час должен быть от 00 до 23.", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("Отмена", callback_data="CANCEL")]]))
         return STATE_INPUT_TIME
 
     ev_date = context.user_data.get("event_date")
@@ -343,14 +349,14 @@ async def input_time_handler(update: Update, context: ContextTypes.DEFAULT_TYPE)
     dt = datetime(ev_date.year, ev_date.month, ev_date.day, hour, minute, tzinfo=APP_TZ)
     now = datetime.now(APP_TZ)
     if dt < now + timedelta(days=1):
-        await update.message.reply_text("Время события должно быть не ранее, чем через 24 часа. Введите другое время.")
+        await update.message.reply_text("Время события должно быть не ранее, чем через 24 часа. Введите другое время.", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("Отмена", callback_data="CANCEL")]]))
         return STATE_INPUT_TIME
 
     context.user_data["event_hour"] = hour
     context.user_data["event_minute"] = minute
 
-    # ask for text
-    await send_and_track(context, chat_id, "Введите текст напоминания (одно сообщение):")
+    # ask for text, include Cancel button
+    await send_and_track(context, chat_id, "Введите текст напоминания (одно сообщение):", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("Отмена", callback_data="CANCEL")]]))
     return STATE_INPUT_TEXT
 
 # Input text handler - user supplies event text
@@ -359,7 +365,7 @@ async def input_text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE)
     chat_id = update.effective_chat.id
 
     if not text:
-        await update.message.reply_text("Пустое сообщение. Введите текст напоминания.")
+        await update.message.reply_text("Пустое сообщение. Введите текст напоминания.", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("Отмена", callback_data="CANCEL")]]))
         return STATE_INPUT_TEXT
 
     context.user_data["event_text"] = text
@@ -461,6 +467,7 @@ async def callback_confirm_save(update: Update, context: ContextTypes.DEFAULT_TY
 
 # Cancel text command
 async def cancel_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    # This handler is used for explicit /cancel command (private)
     await update.message.reply_text("Диалог отменён.")
     await cleanup_messages(context)
     return ConversationHandler.END

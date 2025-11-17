@@ -61,7 +61,7 @@ async def send_reminders():
             message_text = (
                 f"🔔 Напоминание:\n"
                 f"«{note.text}»\n"
-                f"Время события: {local_dt.strftime('%H:%M')}"
+                # f"Время события: {local_dt.strftime('%H:%M')}"
             )
 
             await bot.send_message(chat_id=note.user_id, text=message_text)
