@@ -3,9 +3,10 @@ import os
 import re
 import logging
 import calendar
+import asyncio
 from datetime import datetime, timedelta, date
 from zoneinfo import ZoneInfo
-from typing import Tuple, List
+from typing import Optional
 
 from telegram import (
     Update,
@@ -24,15 +25,12 @@ from telegram.ext import (
 
 from dotenv import load_dotenv
 
-# предполагается, что в database.py есть функции:
+# db functions expected in database.py:
 # init_db(), add_note(chat_id, text, hashtags, remind_utc), get_upcoming_reminders_window(...)
 from database import init_db, add_note, get_upcoming_reminders_window
 
-# -------------------- Настройка логов и окружения --------------------
-logging.basicConfig(
-    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
-    level=logging.INFO
-)
+# -------------------- CONFIG --------------------
+logging.basicConfig(format="%(asctime)s - %(name)s - %(levelname)s - %(message)s", level=logging.INFO)
 logger = logging.getLogger(__name__)
 load_dotenv()
 
@@ -43,21 +41,27 @@ WEBHOOK_PORT = int(os.environ.get("PORT", 10000))
 TZ_NAME = os.environ.get("TZ", "Europe/Moscow")
 APP_TZ = ZoneInfo(TZ_NAME)
 
+# seconds to wait before deleting bot's service message in channel (gives user time to click deep-link)
+DELETE_DELAY_SECONDS = int(os.environ.get("DELETE_DELAY_SECONDS", 120))
+
 if not all([BOT_TOKEN, WEBHOOK_URL, WEBHOOK_SECRET]):
     raise ValueError("Не заданы переменные окружения: BOT_TOKEN, WEBHOOK_URL, WEBHOOK_SECRET_TOKEN")
 
-# -------------------- Инициализация БД --------------------
+# -------------------- DB init --------------------
 try:
     init_db()
-    logger.info("Database initialized.")
+    logger.info("Database initialized")
 except Exception:
-    logger.exception("DB init failed")
+    logger.exception("Failed to initialize DB")
     raise
 
 # -------------------- Conversation states --------------------
-STATE_CHOOSE_DATE, STATE_INPUT_TIME, STATE_INPUT_TEXT, STATE_CONFIRM = range(4)
+STATE_CHOOSE_DATE = 0
+STATE_INPUT_TIME = 1
+STATE_INPUT_TEXT = 2
+STATE_CONFIRM = 3
 
-# -------------------- Локализация --------------------
+# -------------------- Localization --------------------
 RU_MONTHS = {
     1: "Январь", 2: "Февраль", 3: "Март", 4: "Апрель",
     5: "Май", 6: "Июнь", 7: "Июль", 8: "Август",
@@ -65,105 +69,61 @@ RU_MONTHS = {
 }
 WEEK_DAYS_RU = ["Пн", "Вт", "Ср", "Чт", "Пт", "Сб", "Вс"]
 
-# -------------------- Утилиты --------------------
+# -------------------- Utilities --------------------
 def parse_hashtags(text: str) -> str:
     tags = re.findall(r"#[\wа-яА-ЯёЁ]+", text)
     return " ".join(tags)
 
-def month_matrix(year: int, month: int) -> List[List[int]]:
-    cal = calendar.Calendar(firstweekday=0)
-    return cal.monthdayscalendar(year, month)
-
-def add_months(year: int, month: int, delta: int) -> Tuple[int, int]:
-    total = (year * 12 + (month - 1)) + delta
-    new_year = total // 12
-    new_month = (total % 12) + 1
-    return new_year, new_month
-
-def build_two_month_calendar(left_year: int, left_month: int, min_date: date, max_date: date) -> InlineKeyboardMarkup:
+def build_month_calendar(year: int, month: int, min_date: date, max_date: date) -> InlineKeyboardMarkup:
     """
-    Рисует два месяца рядом: left_month (year) и следующий месяц (right).
-    Каждая строка клавиатуры содержит два кнопочных блока — дни левого и правого месяцев.
-    Callback data для дня: DAY#YYYY#MM#DD
-    Навигация: TWO_CAL_PREV#YYYY#MM  и TWO_CAL_NEXT#YYYY#MM (где YYYY/MM — левый месяц)
+    Build a one-month calendar markup with RU localization.
+    Disabled dates (outside min_date..max_date) are callback_data="IGNORE".
+    Navigation callbacks: CAL_PREV#YYYY#MM and CAL_NEXT#YYYY#MM
+    Day callback: DAY#YYYY#MM#DD
     """
-    right_year, right_month = add_months(left_year, left_month, 1)
-
-    left_matrix = month_matrix(left_year, left_month)
-    right_matrix = month_matrix(right_year, right_month)
-
-    # ensure both matrices have same number of weeks (usually 5 or 6)
-    max_weeks = max(len(left_matrix), len(right_matrix))
-    while len(left_matrix) < max_weeks:
-        left_matrix.append([0]*7)
-    while len(right_matrix) < max_weeks:
-        right_matrix.append([0]*7)
+    cal = calendar.Calendar(firstweekday=0)  # Monday first
+    month_days = cal.monthdayscalendar(year, month)
 
     keyboard = []
+    # header: prev, month-year, next
+    keyboard.append([
+        InlineKeyboardButton("<<", callback_data=f"CAL_PREV#{year}#{month}"),
+        InlineKeyboardButton(f"{RU_MONTHS[month]} {year}", callback_data="IGNORE"),
+        InlineKeyboardButton(">>", callback_data=f"CAL_NEXT#{year}#{month}")
+    ])
+    # weekday labels
+    keyboard.append([InlineKeyboardButton(w, callback_data="IGNORE") for w in WEEK_DAYS_RU])
 
-    # header: navigation + month names
-    header = [
-        InlineKeyboardButton("<<", callback_data=f"TWO_CAL_PREV#{left_year}#{left_month}"),
-        InlineKeyboardButton(f"{RU_MONTHS[left_month]} {left_year}", callback_data="IGNORE"),
-        InlineKeyboardButton(" ", callback_data="IGNORE"),
-        InlineKeyboardButton(f"{RU_MONTHS[right_month]} {right_year}", callback_data="IGNORE"),
-        InlineKeyboardButton(">>", callback_data=f"TWO_CAL_NEXT#{left_year}#{left_month}")
-    ]
-    keyboard.append(header)
-
-    # weekday headers (two months side by side)
-    wd_row = []
-    for wd in WEEK_DAYS_RU:
-        wd_row.append(InlineKeyboardButton(wd, callback_data="IGNORE"))
-    # duplicate for right month (we'll present them in same row as a visual trick)
-    # because keyboard rows are single list, we'll put 7 left-day headers then 7 right-day headers in subsequent rows,
-    # but Telegram displays all buttons sequentially — to mimic two calendars we will construct rows combining left/right days.
-    # For better alignment build rows combining left-day and right-day buttons per week below.
-
-    # we won't append wd_row as one row; instead create a combined row of placeholders
-    keyboard.append([InlineKeyboardButton(w, callback_data="IGNORE") for w in WEEK_DAYS_RU] +
-                    [InlineKeyboardButton(w, callback_data="IGNORE") for w in WEEK_DAYS_RU])
-
-    # For each week, create a row that contains 14 buttons: 7 for left month, 7 for right month.
-    for week_idx in range(max_weeks):
-        left_week = left_matrix[week_idx]
-        right_week = right_matrix[week_idx]
+    for week in month_days:
         row = []
-        # left month days
-        for d in left_week:
-            if d == 0:
+        for day in week:
+            if day == 0:
                 row.append(InlineKeyboardButton(" ", callback_data="IGNORE"))
             else:
-                day_date = date(left_year, left_month, d)
+                day_date = date(year, month, day)
                 if day_date < min_date or day_date > max_date:
-                    row.append(InlineKeyboardButton(str(d), callback_data="IGNORE"))
+                    row.append(InlineKeyboardButton(str(day), callback_data="IGNORE"))
                 else:
-                    row.append(InlineKeyboardButton(str(d), callback_data=f"DAY#{left_year}#{left_month}#{d}"))
-        # spacer between months
-        row.append(InlineKeyboardButton(" ", callback_data="IGNORE"))
-        # right month days
-        for d in right_week:
-            if d == 0:
-                row.append(InlineKeyboardButton(" ", callback_data="IGNORE"))
-            else:
-                day_date = date(right_year, right_month, d)
-                if day_date < min_date or day_date > max_date:
-                    row.append(InlineKeyboardButton(str(d), callback_data="IGNORE"))
-                else:
-                    row.append(InlineKeyboardButton(str(d), callback_data=f"DAY#{right_year}#{right_month}#{d}"))
+                    row.append(InlineKeyboardButton(str(day), callback_data=f"DAY#{year}#{month}#{day}"))
         keyboard.append(row)
 
-    # bottom row: cancel
+    # cancel
     keyboard.append([InlineKeyboardButton("Отмена", callback_data="CANCEL")])
     return InlineKeyboardMarkup(keyboard)
 
-async def send_and_track(context: ContextTypes.DEFAULT_TYPE, chat_id: int, text: str, reply_markup=None):
+async def send_and_track(context: ContextTypes.DEFAULT_TYPE, chat_id: int, text: str, reply_markup: Optional[InlineKeyboardMarkup]=None):
+    """
+    Send message and track its id in context.user_data['msg_ids'] for later cleanup.
+    """
     msg = await context.bot.send_message(chat_id=chat_id, text=text, reply_markup=reply_markup)
     ud = context.user_data
     ud.setdefault("msg_ids", []).append(msg.message_id)
     return msg
 
 async def cleanup_messages(context: ContextTypes.DEFAULT_TYPE, keep_final: bool = True):
+    """
+    Delete tracked messages. If keep_final=True, leaves message with id stored in context.user_data['final_message_id'].
+    """
     ud = context.user_data
     chat_id = ud.get("dialog_chat_id")
     if not chat_id:
@@ -176,20 +136,43 @@ async def cleanup_messages(context: ContextTypes.DEFAULT_TYPE, keep_final: bool 
                 continue
             await context.bot.delete_message(chat_id=chat_id, message_id=mid)
         except Exception:
+            # ignore deletion errors
             pass
     ud["msg_ids"] = []
     return
 
+async def try_delete_message(bot, chat_id: int, message_id: int):
+    """
+    Try to delete a message, catch exceptions. Works where allowed.
+    """
+    try:
+        await bot.delete_message(chat_id=chat_id, message_id=message_id)
+        return True
+    except Exception as e:
+        logger.debug(f"Delete failed for {chat_id}:{message_id} — {e}")
+        return False
+
+async def schedule_delete(bot, chat_id: int, message_id: int, delay: int):
+    """
+    Schedule deletion after delay seconds (non-blocking).
+    """
+    await asyncio.sleep(delay)
+    await try_delete_message(bot, chat_id, message_id)
+
 # -------------------- Handlers --------------------
 
-# Обработчик channel_post: ловит /notify и публикует deep-link; также старый формат #напоминание
+# Handle channel_post: /notify -> deep link. Also process old format #напоминание.
 async def handle_channel_post(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not update.channel_post or not update.channel_post.text:
+    if not update.channel_post:
         return
-    text = update.channel_post.text.strip()
-    chat_id = update.channel_post.chat.id
+    text = (update.channel_post.text or "").strip()
+    chat = update.channel_post.chat
+    chat_id = chat.id
+    msg_id = update.channel_post.message_id
 
+    # If user posted /notify in channel -> create deep-link message and attempt to delete user's message and schedule deletion of bot's message
     if text.startswith("/notify"):
+        # get bot username
         bot_username = context.bot.username
         if not bot_username:
             try:
@@ -197,17 +180,31 @@ async def handle_channel_post(update: Update, context: ContextTypes.DEFAULT_TYPE
                 bot_username = me.username
             except Exception:
                 bot_username = None
+
         if not bot_username:
             await update.channel_post.reply_text("Ошибка: не могу определить username бота.")
             return
+
         start_param = f"notify_{chat_id}"
         deep_link = f"https://t.me/{bot_username}?start={start_param}"
         kb = InlineKeyboardMarkup([[InlineKeyboardButton("Создать в личных сообщениях", url=deep_link)]])
-        await update.channel_post.reply_text("Нажмите, чтобы создать интерактивное напоминание в личных сообщениях бота:", reply_markup=kb)
-        logger.info(f"Posted deep link for channel {chat_id}: {deep_link}")
+        bot_msg = await context.bot.send_message(chat_id=chat_id, text="Нажмите, чтобы создать интерактивное напоминание в личных сообщениях бота:", reply_markup=kb)
+        bot_msg_id = bot_msg.message_id
+
+        # try delete user's /notify message (works in channels/groups if bot has rights)
+        await try_delete_message(context.bot, chat_id, msg_id)
+
+        # schedule deletion of bot's service message after delay
+        try:
+            # schedule a background task on the bot's loop
+            asyncio.create_task(schedule_delete(context.bot, chat_id, bot_msg_id, DELETE_DELAY_SECONDS))
+        except Exception:
+            # if scheduling fails, try immediate deletion after short sleep (best effort)
+            logger.debug("Failed to create background task to delete service message")
+
         return
 
-    # старый формат
+    # Else: process old-format reminders with hashtag and @HH:MM DD-MM-YYYY
     hashtags = re.findall(r"#[\wа-яА-ЯёЁ]+", text)
     dt_match = re.search(r"@(\d{2}:\d{2}) (\d{2}-\d{2}-\d{4})", text)
     if "#напоминание" not in hashtags or not dt_match:
@@ -220,30 +217,31 @@ async def handle_channel_post(update: Update, context: ContextTypes.DEFAULT_TYPE
         event_date = naive_dt.replace(tzinfo=APP_TZ)
         now = datetime.now(APP_TZ)
         if event_date < now + timedelta(days=1):
-            await update.channel_post.reply_text("❌ Дата события должна быть хотя бы через сутки.")
+            await context.bot.send_message(chat_id=chat_id, text="❌ Дата события должна быть хотя бы через сутки.")
             return
         remind_at = event_date - timedelta(days=1)
         remind_utc = remind_at.astimezone(ZoneInfo("UTC"))
         cleaned_text = re.sub(r"#[\wа-яА-ЯёЁ]+", "", text).replace(dt_match.group(0), "").strip()
         text_with_event = f"{cleaned_text} (событие: {event_date.strftime('%H:%M %d-%m-%Y')})"
         add_note(chat_id, text_with_event, " ".join(hashtags), remind_utc)
-        await update.channel_post.reply_text(f"✅ Напоминание сохранено.\nУведомление: {remind_at.strftime('%H:%M %d-%m-%Y')}")
+        await context.bot.send_message(chat_id=chat_id, text=f"✅ Напоминание сохранено.\nУведомление: {remind_at.strftime('%H:%M %d-%m-%Y')}")
         logger.info(f"Saved channel reminder: {cleaned_text}")
     except Exception:
         logger.exception("Error saving channel reminder")
-        await update.channel_post.reply_text("Ошибка при сохранении напоминания.")
+        await context.bot.send_message(chat_id=chat_id, text="Ошибка при сохранении напоминания.")
 
-# /start handler — если пришёл deep-link notify_{channel_id} — стартуем диалог
+# /start handler - supports deep link start=notify_{channel_id}
 async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     args = context.args or []
     payload = args[0] if args else None
     chat_id = update.effective_chat.id
 
     if payload and payload.startswith("notify_"):
+        # prepare user_data and start dialog
         try:
             channel_id = int(payload.split("_", 1)[1])
         except Exception:
-            await update.message.reply_text("Неправильный параметр запуска.")
+            await update.message.reply_text("Неверный параметр запуска.")
             return
 
         context.user_data.clear()
@@ -251,23 +249,23 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         context.user_data["dialog_chat_id"] = chat_id
         context.user_data["msg_ids"] = []
 
-        # min/max
+        # min = tomorrow, max = today + 365 days
         today = date.today()
         min_date = today + timedelta(days=1)
         max_date = today + timedelta(days=365)
 
-        # left month -> current month
+        # send calendar for current month (if min_date is next month, compute accordingly)
         left_year = min_date.year
         left_month = min_date.month
-
-        kb = build_two_month_calendar(left_year, left_month, min_date, max_date)
-        await send_and_track(context, chat_id, "Выберите дату события (два месяца):", reply_markup=kb)
+        cal_markup = build_month_calendar(left_year, left_month, min_date, max_date)
+        await send_and_track(context, chat_id, "Выберите дату события (месячный календарь):", reply_markup=cal_markup)
         return STATE_CHOOSE_DATE
 
-    await update.message.reply_text("Привет! Для создания напоминания используйте deep-link из канала или /start notify_<channel_id>.")
+    # default greeting
+    await update.message.reply_text("Привет! Для создания напоминания используйте кнопку из канала или /start notify_<channel_id> (deep-link).")
 
-# CallbackQuery для двухмесячного календаря: навигация или выбор дня
-async def callback_two_calendar(update: Update, context: ContextTypes.DEFAULT_TYPE):
+# CallbackQuery handler for calendar navigation and day selection
+async def callback_calendar(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
     data = query.data or ""
@@ -280,30 +278,39 @@ async def callback_two_calendar(update: Update, context: ContextTypes.DEFAULT_TY
         await cleanup_messages(context)
         return ConversationHandler.END
 
-    if data.startswith("TWO_CAL_PREV#") or data.startswith("TWO_CAL_NEXT#"):
-        _, year_str, month_str = data.split("#")
-        year, month = int(year_str), int(month_str)
-        delta = -1 if data.startswith("TWO_CAL_PREV#") else 1
-        new_year, new_month = add_months(year, month, delta)
-
+    if data.startswith("CAL_PREV#") or data.startswith("CAL_NEXT#"):
+        _, y, m = data.split("#")
+        year, month = int(y), int(m)
+        if data.startswith("CAL_PREV#"):
+            if month == 1:
+                month = 12
+                year -= 1
+            else:
+                month -= 1
+        else:
+            if month == 12:
+                month = 1
+                year += 1
+            else:
+                month += 1
         today = date.today()
         min_date = today + timedelta(days=1)
         max_date = today + timedelta(days=365)
-
-        kb = build_two_month_calendar(new_year, new_month, min_date, max_date)
-        await query.edit_message_text("Выберите дату события (два месяца):", reply_markup=kb)
+        cal_markup = build_month_calendar(year, month, min_date, max_date)
+        await query.edit_message_text("Выберите дату события (месячный календарь):", reply_markup=cal_markup)
         return STATE_CHOOSE_DATE
 
     if data.startswith("DAY#"):
-        _, y_str, m_str, d_str = data.split("#")
-        y, m, d = int(y_str), int(m_str), int(d_str)
-        chosen = date(y, m, d)
-
+        _, y, m, d = data.split("#")
+        chosen = date(int(y), int(m), int(d))
         today = date.today()
         min_date = today + timedelta(days=1)
         max_date = today + timedelta(days=365)
         if chosen < min_date or chosen > max_date:
             await query.edit_message_text("Выбранная дата вне допустимого диапазона. Выберите другую дату.")
+            # refresh calendar for that month
+            cal_markup = build_month_calendar(int(y), int(m), min_date, max_date)
+            await query.edit_message_text("Выберите дату события (месячный календарь):", reply_markup=cal_markup)
             return STATE_CHOOSE_DATE
 
         context.user_data["event_date"] = chosen
@@ -312,7 +319,7 @@ async def callback_two_calendar(update: Update, context: ContextTypes.DEFAULT_TY
 
     return
 
-# Ввод времени вручную
+# Input time handler - expects HH:MM
 async def input_time_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = (update.message.text or "").strip()
     chat_id = update.effective_chat.id
@@ -330,7 +337,7 @@ async def input_time_handler(update: Update, context: ContextTypes.DEFAULT_TYPE)
 
     ev_date = context.user_data.get("event_date")
     if not ev_date:
-        await update.message.reply_text("Ошибка: дата не найдена. Запустите диалог заново.")
+        await update.message.reply_text("Ошибка: дата отсутствует. Запустите диалог заново.")
         return ConversationHandler.END
 
     dt = datetime(ev_date.year, ev_date.month, ev_date.day, hour, minute, tzinfo=APP_TZ)
@@ -342,10 +349,11 @@ async def input_time_handler(update: Update, context: ContextTypes.DEFAULT_TYPE)
     context.user_data["event_hour"] = hour
     context.user_data["event_minute"] = minute
 
+    # ask for text
     await send_and_track(context, chat_id, "Введите текст напоминания (одно сообщение):")
     return STATE_INPUT_TEXT
 
-# Ввод текста напоминания (ручной)
+# Input text handler - user supplies event text
 async def input_text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = (update.message.text or "").strip()
     chat_id = update.effective_chat.id
@@ -376,7 +384,7 @@ async def input_text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE)
     context.user_data["final_message_id"] = msg.message_id
     return STATE_CONFIRM
 
-# Подтверждение и сохранение
+# Confirm and save
 async def callback_confirm_save(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
@@ -414,50 +422,50 @@ async def callback_confirm_save(update: Update, context: ContextTypes.DEFAULT_TY
         try:
             add_note(channel_id, text_with_event, hashtags, remind_utc)
         except Exception:
-            logger.exception("Error saving note to DB")
+            logger.exception("Failed adding note to DB")
             await query.edit_message_text("Ошибка при сохранении в БД.")
             await cleanup_messages(context)
             return ConversationHandler.END
 
         await query.edit_message_text("✅ Напоминание сохранено. Финальное подтверждение в личных сообщениях.")
 
+        # final confirmation in private chat (kept)
         final = await context.bot.send_message(
             chat_id=context.user_data.get("dialog_chat_id"),
             text=(
                 "Новое напоминание создано:\n"
-                f"«{text}»\n"
-                f"Дата события: {event_dt.strftime('%H:%M %d-%m-%Y')}\n"
+                f"«{text_with_event}»\n"
                 f"{hashtags}"
             )
         )
         context.user_data["final_message_id"] = final.message_id
 
-        # Отправляем компактное уведомление в канал (без "назначено на", только время)
+        # send short confirmation in channel: contain only the stored text (which already has (событие: ...)) and hashtag
         try:
             await context.bot.send_message(
                 chat_id=channel_id,
                 text=(
                     "🔔 Новое напоминание создано:\n"
-                    f"«{text}»\n"
-                    f"Время события: {event_dt.strftime('%H:%M')}\n"
+                    f"«{text_with_event}»\n"
                     f"{hashtags}"
                 )
             )
         except Exception:
-            logger.warning(f"Не удалось отправить подтверждение в канал {channel_id}")
+            logger.warning(f"Could not post confirmation to channel {channel_id}. Bot may lack post rights.")
 
+        # cleanup intermediate messages
         await cleanup_messages(context, keep_final=True)
         return ConversationHandler.END
 
     return
 
-# Отмена текстом
+# Cancel text command
 async def cancel_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("Диалог отменён.")
     await cleanup_messages(context)
     return ConversationHandler.END
 
-# /upcoming в ЛС
+# Simple /upcoming command in private
 async def upcoming_notes_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     now_utc = datetime.now(ZoneInfo("UTC"))
     future_utc = now_utc + timedelta(days=365)
@@ -475,38 +483,30 @@ async def upcoming_notes_command(update: Update, context: ContextTypes.DEFAULT_T
         logger.exception("Error fetching upcoming notes")
         await update.message.reply_text("Ошибка при получении напоминаний.")
 
-# -------------------- MAIN --------------------
+# -------------------- Main --------------------
 def main():
     application = Application.builder().token(BOT_TOKEN).build()
 
-    # channel_post handler
+    # Channel posts handler (old format + /notify)
     application.add_handler(MessageHandler(filters.ChatType.CHANNEL, handle_channel_post))
 
-    # Conversation for personal dialog
+    # Conversation handler for private dialog
     conv = ConversationHandler(
         entry_points=[CommandHandler("start", start_command)],
         states={
-            STATE_CHOOSE_DATE: [
-                CallbackQueryHandler(callback_two_calendar, pattern=r"^(TWO_CAL_PREV#|TWO_CAL_NEXT#|DAY#|IGNORE|CANCEL).*$")
-            ],
-            STATE_INPUT_TIME: [
-                MessageHandler(filters.TEXT & filters.ChatType.PRIVATE, input_time_handler)
-            ],
-            STATE_INPUT_TEXT: [
-                MessageHandler(filters.TEXT & filters.ChatType.PRIVATE, input_text_handler),
-                CommandHandler("cancel", cancel_handler)
-            ],
-            STATE_CONFIRM: [
-                CallbackQueryHandler(callback_confirm_save, pattern=r"^(CONFIRM_SAVE|CANCEL)$")
-            ],
+            STATE_CHOOSE_DATE: [CallbackQueryHandler(callback_calendar, pattern=r"^(CAL_PREV#|CAL_NEXT#|DAY#|IGNORE|CANCEL).*$")],
+            STATE_INPUT_TIME: [MessageHandler(filters.TEXT & filters.ChatType.PRIVATE, input_time_handler)],
+            STATE_INPUT_TEXT: [MessageHandler(filters.TEXT & filters.ChatType.PRIVATE, input_text_handler), CommandHandler("cancel", cancel_handler)],
+            STATE_CONFIRM: [CallbackQueryHandler(callback_confirm_save, pattern=r"^(CONFIRM_SAVE|CANCEL)$")],
         },
         fallbacks=[CommandHandler("cancel", cancel_handler)],
         per_user=True,
         allow_reentry=True,
         conversation_timeout=60*30
     )
-
     application.add_handler(conv)
+
+    # /upcoming
     application.add_handler(CommandHandler("upcoming", upcoming_notes_command, filters=filters.ChatType.PRIVATE))
 
     logger.info("Starting webhook...")
