@@ -226,7 +226,9 @@ async def handle_channel_post(update: Update, context: ContextTypes.DEFAULT_TYPE
         remind_at = event_date - timedelta(days=1)
         remind_utc = remind_at.astimezone(ZoneInfo("UTC"))
         cleaned_text = re.sub(r"#[\wа-яА-ЯёЁ]+", "", text).replace(dt_match.group(0), "").strip()
+        # Display format A: "HH:MM DD-MM-YYYY"
         text_with_event = f"{cleaned_text} (событие: {event_date.strftime('%H:%M %d-%m-%Y')})"
+        # Save to DB: add_note expects datetime object for reminder_date (remind_utc) — unchanged
         add_note(chat_id, text_with_event, " ".join(hashtags), remind_utc)
         await context.bot.send_message(chat_id=chat_id, text=f"✅ Напоминание сохранено.\nУведомление: {remind_at.strftime('%H:%M %d-%m-%Y')}")
         logger.info(f"Saved channel reminder: {cleaned_text}")
@@ -423,9 +425,11 @@ async def callback_confirm_save(update: Update, context: ContextTypes.DEFAULT_TY
             else:
                 hashtags = "#напоминание"
 
+        # Display text contains "событие: HH:MM DD-MM-YYYY" (format A)
         text_with_event = f"{text} (событие: {event_dt.strftime('%H:%M %d-%m-%Y')})"
 
         try:
+            # add_note expects datetime for reminder_date (we pass remind_utc), text is string (text_with_event)
             add_note(channel_id, text_with_event, hashtags, remind_utc)
         except Exception:
             logger.exception("Failed adding note to DB")
