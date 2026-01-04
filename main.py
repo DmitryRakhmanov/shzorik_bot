@@ -26,8 +26,8 @@ from telegram.ext import (
 from dotenv import load_dotenv
 
 # db functions expected in database.py:
-# init_db(), add_note(chat_id, text, hashtags, remind_utc), get_upcoming_reminders_window(...)
-from database import init_db, add_note, get_upcoming_reminders_window
+# init_db(), add_note(chat_id, text, hashtags, remind_utc), get_upcoming_reminders_window(...), mark_reminder_sent(...)
+from database import init_db, add_note, get_upcoming_reminders_window, mark_reminder_sent
 
 # -------------------- CONFIG --------------------
 logging.basicConfig(format="%(asctime)s - %(name)s - %(levelname)s - %(message)s", level=logging.INFO)
@@ -228,7 +228,7 @@ async def handle_channel_post(update: Update, context: ContextTypes.DEFAULT_TYPE
         cleaned_text = re.sub(r"#[\wа-яА-ЯёЁ]+", "", text).replace(dt_match.group(0), "").strip()
         # Display format A: "HH:MM DD-MM-YYYY"
         text_with_event = f"{cleaned_text} (событие: {event_date.strftime('%H:%M %d-%m-%Y')})"
-        # Save to DB: add_note expects datetime object for reminder_date (remind_utc) — unchanged
+        # Save to DB: add_note expects datetime object for reminder_date (remind_utc), get_upcoming_reminders_window uses timezone-aware datetimes
         add_note(chat_id, text_with_event, " ".join(hashtags), remind_utc)
         await context.bot.send_message(chat_id=chat_id, text=f"✅ Напоминание сохранено.\nУведомление: {remind_at.strftime('%H:%M %d-%m-%Y')}")
         logger.info(f"Saved channel reminder: {cleaned_text}")
@@ -494,14 +494,55 @@ async def upcoming_notes_command(update: Update, context: ContextTypes.DEFAULT_T
         logger.exception("Error fetching upcoming notes")
         await update.message.reply_text("Ошибка при получении напоминаний.")
 
+# -------------------- Background reminder loop --------------------
+# Runs in background inside the Application; checks DB and sends reminders, marks them sent.
+async def reminder_loop(application: Application):
+    # We'll check small window around now (similar to your cron)
+    while True:
+        try:
+            BOT = application.bot
+            APP_TZ_LOCAL = APP_TZ
+            now_utc = datetime.now(ZoneInfo("UTC"))
+            window_start_utc = now_utc - timedelta(minutes=20)
+            window_end_utc = now_utc + timedelta(minutes=5)
+            try:
+                upcoming = get_upcoming_reminders_window(window_start_utc, window_end_utc, only_unsent=True)
+            except Exception as e:
+                logger.error(f"DB error while fetching reminders: {e}")
+                upcoming = []
+            logger.debug(f"Reminder loop found {len(upcoming)} reminders")
+            sent_count = 0
+            for note in upcoming:
+                try:
+                    local_dt = note.reminder_date.astimezone(APP_TZ_LOCAL)
+                    message_text = (
+                        f"🔔 Напоминание:\n"
+                        f"«{note.text}»"
+                    )
+                    await BOT.send_message(chat_id=note.user_id, text=message_text)
+                    # mark as sent
+                    try:
+                        mark_reminder_sent(note.id)
+                    except Exception as e:
+                        logger.exception(f"Failed to mark reminder {note.id} as sent: {e}")
+                    logger.info(f"Sent reminder {note.id} to {note.user_id}")
+                    sent_count += 1
+                except Exception as e:
+                    logger.error(f"Failed to send reminder {note.id}: {e}")
+            logger.debug(f"Reminder loop sent {sent_count} messages")
+        except Exception as e:
+            logger.exception(f"Unexpected error in reminder loop: {e}")
+        # sleep between checks
+        await asyncio.sleep(60)
+
 # -------------------- Main --------------------
 def main():
     application = Application.builder().token(BOT_TOKEN).build()
 
-    # Channel posts handler (old format + /notify)
+    # Channel posts handler
     application.add_handler(MessageHandler(filters.ChatType.CHANNEL, handle_channel_post))
 
-    # Conversation handler for private dialog
+    # Conversation handler (as in your original code)
     conv = ConversationHandler(
         entry_points=[CommandHandler("start", start_command)],
         states={
@@ -519,6 +560,12 @@ def main():
 
     # /upcoming
     application.add_handler(CommandHandler("upcoming", upcoming_notes_command, filters=filters.ChatType.PRIVATE))
+
+    # Start background reminder loop after Application init
+    async def start_background(app: Application):
+        # create background task
+        asyncio.create_task(reminder_loop(app))
+    application.post_init = start_background
 
     logger.info("Starting webhook...")
     application.run_webhook(
