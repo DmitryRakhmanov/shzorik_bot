@@ -539,7 +539,7 @@ def main():
     # Decide mode: webhook (if WEBHOOK_URL provided) or polling fallback
     if WEBHOOK_URL and WEBHOOK_SECRET:
         logger.info("Starting webhook mode...")
-        application.run_webhook(
+        application.run_polling(
             listen="0.0.0.0",
             port=WEBHOOK_PORT,
             url_path="/telegram",
