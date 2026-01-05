@@ -1,4 +1,4 @@
-# main.py
+# main.py — объединённый файл (бот + задача отправки напоминаний)
 import os
 import re
 import logging
@@ -25,8 +25,7 @@ from telegram.ext import (
 
 from dotenv import load_dotenv
 
-# db functions expected in database.py:
-# init_db(), add_note(chat_id, text, hashtags, remind_utc), get_upcoming_reminders_window(...), mark_reminder_sent(...)
+# DB (синхронный) — мы будем вызывать его через run_in_executor
 from database import init_db, add_note, get_upcoming_reminders_window, mark_reminder_sent
 
 # -------------------- CONFIG --------------------
@@ -35,7 +34,7 @@ logger = logging.getLogger(__name__)
 load_dotenv()
 
 BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
-WEBHOOK_URL = os.environ.get("WEBHOOK_URL")
+WEBHOOK_URL = os.environ.get("WEBHOOK_URL")  # если пусто — будет polling
 WEBHOOK_SECRET = os.environ.get("WEBHOOK_SECRET_TOKEN")
 WEBHOOK_PORT = int(os.environ.get("PORT", 10000))
 TZ_NAME = os.environ.get("TZ", "Europe/Moscow")
@@ -44,10 +43,11 @@ APP_TZ = ZoneInfo(TZ_NAME)
 # seconds to wait before deleting bot's service message in channel (gives user time to click deep-link)
 DELETE_DELAY_SECONDS = int(os.environ.get("DELETE_DELAY_SECONDS", 120))
 
-if not all([BOT_TOKEN, WEBHOOK_URL, WEBHOOK_SECRET]):
-    raise ValueError("Не заданы переменные окружения: BOT_TOKEN, WEBHOOK_URL, WEBHOOK_SECRET_TOKEN")
+if not BOT_TOKEN:
+    raise ValueError("Не задана переменная окружения: TELEGRAM_BOT_TOKEN")
 
 # -------------------- DB init --------------------
+# Инициализация БД (blocking). Можно запустить в executor, но обычно это быстро.
 try:
     init_db()
     logger.info("Database initialized")
@@ -75,12 +75,6 @@ def parse_hashtags(text: str) -> str:
     return " ".join(tags)
 
 def build_month_calendar(year: int, month: int, min_date: date, max_date: date) -> InlineKeyboardMarkup:
-    """
-    Build a one-month calendar markup with RU localization.
-    Disabled dates (outside min_date..max_date) are callback_data="IGNORE".
-    Navigation callbacks: CAL_PREV#YYYY#MM and CAL_NEXT#YYYY#MM
-    Day callback: DAY#YYYY#MM#DD
-    """
     cal = calendar.Calendar(firstweekday=0)  # Monday first
     month_days = cal.monthdayscalendar(year, month)
 
@@ -112,18 +106,12 @@ def build_month_calendar(year: int, month: int, min_date: date, max_date: date) 
     return InlineKeyboardMarkup(keyboard)
 
 async def send_and_track(context: ContextTypes.DEFAULT_TYPE, chat_id: int, text: str, reply_markup: Optional[InlineKeyboardMarkup]=None):
-    """
-    Send message and track its id in context.user_data['msg_ids'] for later cleanup.
-    """
     msg = await context.bot.send_message(chat_id=chat_id, text=text, reply_markup=reply_markup)
     ud = context.user_data
     ud.setdefault("msg_ids", []).append(msg.message_id)
     return msg
 
 async def cleanup_messages(context: ContextTypes.DEFAULT_TYPE, keep_final: bool = True):
-    """
-    Delete tracked messages. If keep_final=True, leaves message with id stored in context.user_data['final_message_id'].
-    """
     ud = context.user_data
     chat_id = ud.get("dialog_chat_id")
     if not chat_id:
@@ -136,15 +124,11 @@ async def cleanup_messages(context: ContextTypes.DEFAULT_TYPE, keep_final: bool 
                 continue
             await context.bot.delete_message(chat_id=chat_id, message_id=mid)
         except Exception:
-            # ignore deletion errors
             pass
     ud["msg_ids"] = []
     return
 
 async def try_delete_message(bot, chat_id: int, message_id: int):
-    """
-    Try to delete a message, catch exceptions. Works where allowed.
-    """
     try:
         await bot.delete_message(chat_id=chat_id, message_id=message_id)
         return True
@@ -153,14 +137,23 @@ async def try_delete_message(bot, chat_id: int, message_id: int):
         return False
 
 async def schedule_delete(bot, chat_id: int, message_id: int, delay: int):
-    """
-    Schedule deletion after delay seconds (non-blocking).
-    """
     await asyncio.sleep(delay)
     await try_delete_message(bot, chat_id, message_id)
 
-# -------------------- Handlers --------------------
+# -------------------- DB wrappers (run sync DB funcs in executor) --------------------
+async def db_add_note(user_id: int, text: str, hashtags: str, reminder_date):
+    loop = asyncio.get_running_loop()
+    return await loop.run_in_executor(None, add_note, user_id, text, hashtags, reminder_date)
 
+async def db_get_upcoming(start_time_utc: datetime, end_time_utc: datetime, only_unsent: bool = True):
+    loop = asyncio.get_running_loop()
+    return await loop.run_in_executor(None, get_upcoming_reminders_window, start_time_utc, end_time_utc, only_unsent)
+
+async def db_mark_reminder_sent(note_id: int):
+    loop = asyncio.get_running_loop()
+    return await loop.run_in_executor(None, mark_reminder_sent, note_id)
+
+# -------------------- Handlers --------------------
 # Handle channel_post: /notify -> deep link. Also process old format #напоминание.
 async def handle_channel_post(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not update.channel_post:
@@ -172,7 +165,6 @@ async def handle_channel_post(update: Update, context: ContextTypes.DEFAULT_TYPE
 
     # If user posted /notify in channel -> create deep-link message and attempt to delete user's message and schedule deletion of bot's message
     if text.startswith("/notify"):
-        # get bot username
         bot_username = context.bot.username
         if not bot_username:
             try:
@@ -194,13 +186,12 @@ async def handle_channel_post(update: Update, context: ContextTypes.DEFAULT_TYPE
         # try delete user's /notify message (works in channels/groups if bot has rights)
         await try_delete_message(context.bot, chat_id, msg_id)
 
-        # schedule deletion of bot's service message after short delay (30s) to remove clutter quickly
+        # schedule quick deletion and fallback deletion
         try:
             asyncio.create_task(schedule_delete(context.bot, chat_id, bot_msg_id, 30))
         except Exception:
             logger.debug("Failed to schedule quick deletion; falling back to scheduled deletion")
 
-        # also schedule deletion after DELETE_DELAY_SECONDS as fallback (if quick delete didn't work or user needs more time)
         try:
             asyncio.create_task(schedule_delete(context.bot, chat_id, bot_msg_id, DELETE_DELAY_SECONDS))
         except Exception:
@@ -226,10 +217,9 @@ async def handle_channel_post(update: Update, context: ContextTypes.DEFAULT_TYPE
         remind_at = event_date - timedelta(days=1)
         remind_utc = remind_at.astimezone(ZoneInfo("UTC"))
         cleaned_text = re.sub(r"#[\wа-яА-ЯёЁ]+", "", text).replace(dt_match.group(0), "").strip()
-        # Display format A: "HH:MM DD-MM-YYYY"
         text_with_event = f"{cleaned_text} (событие: {event_date.strftime('%H:%M %d-%m-%Y')})"
-        # Save to DB: add_note expects datetime object for reminder_date (remind_utc), get_upcoming_reminders_window uses timezone-aware datetimes
-        add_note(chat_id, text_with_event, " ".join(hashtags), remind_utc)
+        # Save to DB (run in executor)
+        await db_add_note(chat_id, text_with_event, " ".join(hashtags), remind_utc)
         await context.bot.send_message(chat_id=chat_id, text=f"✅ Напоминание сохранено.\nУведомление: {remind_at.strftime('%H:%M %d-%m-%Y')}")
         logger.info(f"Saved channel reminder: {cleaned_text}")
     except Exception:
@@ -243,7 +233,6 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = update.effective_chat.id
 
     if payload and payload.startswith("notify_"):
-        # prepare user_data and start dialog
         try:
             channel_id = int(payload.split("_", 1)[1])
         except Exception:
@@ -255,19 +244,15 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         context.user_data["dialog_chat_id"] = chat_id
         context.user_data["msg_ids"] = []
 
-        # min = tomorrow, max = today + 365 days
         today = date.today()
         min_date = today + timedelta(days=1)
         max_date = today + timedelta(days=365)
-
-        # send calendar for current month (if min_date is next month, compute accordingly)
         left_year = min_date.year
         left_month = min_date.month
         cal_markup = build_month_calendar(left_year, left_month, min_date, max_date)
         await send_and_track(context, chat_id, "Выберите дату события (месячный календарь):", reply_markup=cal_markup)
         return STATE_CHOOSE_DATE
 
-    # default greeting
     await update.message.reply_text("Привет! Для создания напоминания используйте кнопку из канала или /start notify_<channel_id> (deep-link).")
 
 # CallbackQuery handler for calendar navigation and day selection
@@ -314,13 +299,11 @@ async def callback_calendar(update: Update, context: ContextTypes.DEFAULT_TYPE):
         max_date = today + timedelta(days=365)
         if chosen < min_date or chosen > max_date:
             await query.edit_message_text("Выбранная дата вне допустимого диапазона. Выберите другую дату.")
-            # refresh calendar for that month
             cal_markup = build_month_calendar(int(y), int(m), min_date, max_date)
             await query.edit_message_text("Выберите дату события (месячный календарь):", reply_markup=cal_markup)
             return STATE_CHOOSE_DATE
 
         context.user_data["event_date"] = chosen
-        # include Cancel button in the next prompt
         cancel_kb = InlineKeyboardMarkup([[InlineKeyboardButton("Отмена", callback_data="CANCEL")]])
         await query.edit_message_text(f"Вы выбрали: {chosen.strftime('%d-%m-%Y')}\n\nВведите время в формате HH:MM (например, 14:30):", reply_markup=cancel_kb)
         return STATE_INPUT_TIME
@@ -357,7 +340,6 @@ async def input_time_handler(update: Update, context: ContextTypes.DEFAULT_TYPE)
     context.user_data["event_hour"] = hour
     context.user_data["event_minute"] = minute
 
-    # ask for text, include Cancel button
     await send_and_track(context, chat_id, "Введите текст напоминания (одно сообщение):", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("Отмена", callback_data="CANCEL")]]))
     return STATE_INPUT_TEXT
 
@@ -425,12 +407,10 @@ async def callback_confirm_save(update: Update, context: ContextTypes.DEFAULT_TY
             else:
                 hashtags = "#напоминание"
 
-        # Display text contains "событие: HH:MM DD-MM-YYYY" (format A)
         text_with_event = f"{text} (событие: {event_dt.strftime('%H:%M %d-%m-%Y')})"
 
         try:
-            # add_note expects datetime for reminder_date (we pass remind_utc), text is string (text_with_event)
-            add_note(channel_id, text_with_event, hashtags, remind_utc)
+            await db_add_note(channel_id, text_with_event, hashtags, remind_utc)
         except Exception:
             logger.exception("Failed adding note to DB")
             await query.edit_message_text("Ошибка при сохранении в БД.")
@@ -439,7 +419,6 @@ async def callback_confirm_save(update: Update, context: ContextTypes.DEFAULT_TY
 
         await query.edit_message_text("✅ Напоминание сохранено. Финальное подтверждение в личных сообщениях.")
 
-        # final confirmation in private chat (kept)
         final = await context.bot.send_message(
             chat_id=context.user_data.get("dialog_chat_id"),
             text=(
@@ -450,7 +429,6 @@ async def callback_confirm_save(update: Update, context: ContextTypes.DEFAULT_TY
         )
         context.user_data["final_message_id"] = final.message_id
 
-        # send short confirmation in channel: contain only the stored text (which already has (событие: ...)) and hashtag
         try:
             await context.bot.send_message(
                 chat_id=channel_id,
@@ -463,7 +441,6 @@ async def callback_confirm_save(update: Update, context: ContextTypes.DEFAULT_TY
         except Exception:
             logger.warning(f"Could not post confirmation to channel {channel_id}. Bot may lack post rights.")
 
-        # cleanup intermediate messages
         await cleanup_messages(context, keep_final=True)
         return ConversationHandler.END
 
@@ -471,7 +448,6 @@ async def callback_confirm_save(update: Update, context: ContextTypes.DEFAULT_TY
 
 # Cancel text command
 async def cancel_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    # This handler is used for explicit /cancel command (private)
     await update.message.reply_text("Диалог отменён.")
     await cleanup_messages(context)
     return ConversationHandler.END
@@ -481,7 +457,7 @@ async def upcoming_notes_command(update: Update, context: ContextTypes.DEFAULT_T
     now_utc = datetime.now(ZoneInfo("UTC"))
     future_utc = now_utc + timedelta(days=365)
     try:
-        notes = get_upcoming_reminders_window(now_utc, future_utc, only_unsent=True)
+        notes = await db_get_upcoming(now_utc, future_utc, only_unsent=True)
         if not notes:
             await update.message.reply_text("Нет предстоящих напоминаний.")
             return
@@ -494,55 +470,50 @@ async def upcoming_notes_command(update: Update, context: ContextTypes.DEFAULT_T
         logger.exception("Error fetching upcoming notes")
         await update.message.reply_text("Ошибка при получении напоминаний.")
 
-# -------------------- Background reminder loop --------------------
-# Runs in background inside the Application; checks DB and sends reminders, marks them sent.
-async def reminder_loop(application: Application):
-    # We'll check small window around now (similar to your cron)
-    while True:
-        try:
-            BOT = application.bot
-            APP_TZ_LOCAL = APP_TZ
-            now_utc = datetime.now(ZoneInfo("UTC"))
-            window_start_utc = now_utc - timedelta(minutes=20)
-            window_end_utc = now_utc + timedelta(minutes=5)
+# -------------------- Reminders job (integrated) --------------------
+async def send_reminders_job(context: ContextTypes.DEFAULT_TYPE):
+    """
+    JobQueue callback — выполняется периодически.
+    Логика — окно now-20min .. now+5min чтобы компенсировать задержки cron/webhook.
+    """
+    try:
+        now_utc = datetime.now(ZoneInfo("UTC"))
+        window_start_utc = now_utc - timedelta(minutes=20)
+        window_end_utc = now_utc + timedelta(minutes=5)
+
+        upcoming = await db_get_upcoming(window_start_utc, window_end_utc, only_unsent=True)
+        logger.info(f"Reminders job: found {len(upcoming)} reminders in window {window_start_utc}..{window_end_utc}")
+
+        if not upcoming:
+            return
+
+        sent_count = 0
+        for note in upcoming:
             try:
-                upcoming = get_upcoming_reminders_window(window_start_utc, window_end_utc, only_unsent=True)
+                local_dt = note.reminder_date.astimezone(APP_TZ)
+                message_text = (
+                    f"🔔 Напоминание:\n"
+                    f"«{note.text}»\n"
+                )
+                await context.bot.send_message(chat_id=note.user_id, text=message_text)
+                await db_mark_reminder_sent(note.id)
+                logger.info(f"Sent reminder {note.id} to {note.user_id}")
+                sent_count += 1
             except Exception as e:
-                logger.error(f"DB error while fetching reminders: {e}")
-                upcoming = []
-            logger.debug(f"Reminder loop found {len(upcoming)} reminders")
-            sent_count = 0
-            for note in upcoming:
-                try:
-                    local_dt = note.reminder_date.astimezone(APP_TZ_LOCAL)
-                    message_text = (
-                        f"🔔 Напоминание:\n"
-                        f"«{note.text}»"
-                    )
-                    await BOT.send_message(chat_id=note.user_id, text=message_text)
-                    # mark as sent
-                    try:
-                        mark_reminder_sent(note.id)
-                    except Exception as e:
-                        logger.exception(f"Failed to mark reminder {note.id} as sent: {e}")
-                    logger.info(f"Sent reminder {note.id} to {note.user_id}")
-                    sent_count += 1
-                except Exception as e:
-                    logger.error(f"Failed to send reminder {note.id}: {e}")
-            logger.debug(f"Reminder loop sent {sent_count} messages")
-        except Exception as e:
-            logger.exception(f"Unexpected error in reminder loop: {e}")
-        # sleep between checks
-        await asyncio.sleep(60)
+                logger.exception(f"Failed to send reminder {getattr(note, 'id', 'unknown')}: {e}")
+
+        logger.info(f"Reminders job: sent {sent_count} messages")
+    except Exception:
+        logger.exception("Reminders job failed")
 
 # -------------------- Main --------------------
 def main():
     application = Application.builder().token(BOT_TOKEN).build()
 
-    # Channel posts handler
+    # Channel posts handler (old format + /notify)
     application.add_handler(MessageHandler(filters.ChatType.CHANNEL, handle_channel_post))
 
-    # Conversation handler (as in your original code)
+    # Conversation handler for private dialog
     conv = ConversationHandler(
         entry_points=[CommandHandler("start", start_command)],
         states={
@@ -561,21 +532,24 @@ def main():
     # /upcoming
     application.add_handler(CommandHandler("upcoming", upcoming_notes_command, filters=filters.ChatType.PRIVATE))
 
-    # Start background reminder loop after Application init
-    async def start_background(app: Application):
-        # create background task
-        asyncio.create_task(reminder_loop(app))
-    application.post_init = start_background
+    # Schedule reminders job:
+    # run every 60 seconds, first run after 10 seconds
+    application.job_queue.run_repeating(send_reminders_job, interval=60, first=10)
 
-    logger.info("Starting webhook...")
-    application.run_webhook(
-        listen="0.0.0.0",
-        port=WEBHOOK_PORT,
-        url_path="/telegram",
-        webhook_url=WEBHOOK_URL,
-        secret_token=WEBHOOK_SECRET,
-        allowed_updates=["message", "edited_message", "channel_post", "edited_channel_post", "callback_query", "my_chat_member", "chat_member"]
-    )
+    # Decide mode: webhook (if WEBHOOK_URL provided) or polling fallback
+    if WEBHOOK_URL and WEBHOOK_SECRET:
+        logger.info("Starting webhook mode...")
+        application.run_webhook(
+            listen="0.0.0.0",
+            port=WEBHOOK_PORT,
+            url_path="/telegram",
+            webhook_url=WEBHOOK_URL,
+            secret_token=WEBHOOK_SECRET,
+            allowed_updates=["message", "edited_message", "channel_post", "edited_channel_post", "callback_query", "my_chat_member", "chat_member"]
+        )
+    else:
+        logger.info("WEBHOOK_URL or WEBHOOK_SECRET_TOKEN not set — falling back to long polling.")
+        application.run_polling(allowed_updates=["message", "edited_message", "channel_post", "edited_channel_post", "callback_query", "my_chat_member", "chat_member"])
 
 if __name__ == "__main__":
     main()
