@@ -1,4 +1,4 @@
-# main.py — объединённый файл (бот + задача отправки напоминаний)
+# main.py — обновлённый (копируйте целиком)
 import os
 import re
 import logging
@@ -25,7 +25,7 @@ from telegram.ext import (
 
 from dotenv import load_dotenv
 
-# DB (синхронный) — мы будем вызывать его через run_in_executor
+# DB (синхронный) — будем вызывать через run_in_executor
 from database import init_db, add_note, get_upcoming_reminders_window, mark_reminder_sent
 
 # -------------------- CONFIG --------------------
@@ -33,7 +33,8 @@ logging.basicConfig(format="%(asctime)s - %(name)s - %(levelname)s - %(message)s
 logger = logging.getLogger(__name__)
 load_dotenv()
 
-BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
+# поддерживаем оба имени переменных для удобства
+BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN") or os.environ.get("BOT_TOKEN")
 WEBHOOK_URL = os.environ.get("WEBHOOK_URL")  # если пусто — будет polling
 WEBHOOK_SECRET = os.environ.get("WEBHOOK_SECRET_TOKEN")
 WEBHOOK_PORT = int(os.environ.get("PORT", 10000))
@@ -44,10 +45,9 @@ APP_TZ = ZoneInfo(TZ_NAME)
 DELETE_DELAY_SECONDS = int(os.environ.get("DELETE_DELAY_SECONDS", 120))
 
 if not BOT_TOKEN:
-    raise ValueError("Не задана переменная окружения: TELEGRAM_BOT_TOKEN")
+    raise ValueError("Не задана переменная окружения: TELEGRAM_BOT_TOKEN или BOT_TOKEN")
 
 # -------------------- DB init --------------------
-# Инициализация БД (blocking). Можно запустить в executor, но обычно это быстро.
 try:
     init_db()
     logger.info("Database initialized")
@@ -154,7 +154,6 @@ async def db_mark_reminder_sent(note_id: int):
     return await loop.run_in_executor(None, mark_reminder_sent, note_id)
 
 # -------------------- Handlers --------------------
-# Handle channel_post: /notify -> deep link. Also process old format #напоминание.
 async def handle_channel_post(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not update.channel_post:
         return
@@ -474,7 +473,7 @@ async def upcoming_notes_command(update: Update, context: ContextTypes.DEFAULT_T
 async def send_reminders_job(context: ContextTypes.DEFAULT_TYPE):
     """
     JobQueue callback — выполняется периодически.
-    Логика — окно now-20min .. now+5min чтобы компенсировать задержки cron/webhook.
+    Окно: now -20min .. now +5min
     """
     try:
         now_utc = datetime.now(ZoneInfo("UTC"))
@@ -490,7 +489,8 @@ async def send_reminders_job(context: ContextTypes.DEFAULT_TYPE):
         sent_count = 0
         for note in upcoming:
             try:
-                local_dt = note.reminder_date.astimezone(APP_TZ)
+                # note.user_id — в модели database.py
+                local_dt = note.reminder_date.astimezone(APP_TZ) if note.reminder_date else None
                 message_text = (
                     f"🔔 Напоминание:\n"
                     f"«{note.text}»\n"
@@ -532,23 +532,27 @@ def main():
     # /upcoming
     application.add_handler(CommandHandler("upcoming", upcoming_notes_command, filters=filters.ChatType.PRIVATE))
 
-    # Schedule reminders job:
-    # run every 60 seconds, first run after 10 seconds
-    application.job_queue.run_repeating(send_reminders_job, interval=60, first=10)
+    # Ensure job_queue exists (PTB создает его при сборке, если установлены нужные extras)
+    if application.job_queue is None:
+        logger.warning("JobQueue is not available. Make sure python-telegram-bot[job-queue] is installed.")
+    else:
+        # Schedule reminders job: every 60 seconds
+        application.job_queue.run_repeating(send_reminders_job, interval=60, first=10)
 
     # Decide mode: webhook (if WEBHOOK_URL provided) or polling fallback
     if WEBHOOK_URL and WEBHOOK_SECRET:
         logger.info("Starting webhook mode...")
-        application.run_polling(
+        # run_webhook — слушаем 0.0.0.0:WEBHOOK_PORT и регистрируем URL у Telegram
+        application.run_webhook(
             listen="0.0.0.0",
             port=WEBHOOK_PORT,
-            url_path="/telegram",
+            url_path="telegram",  # путь в сервере (например /telegram)
             webhook_url=WEBHOOK_URL,
             secret_token=WEBHOOK_SECRET,
             allowed_updates=["message", "edited_message", "channel_post", "edited_channel_post", "callback_query", "my_chat_member", "chat_member"]
         )
     else:
-        logger.info("WEBHOOK_URL or WEBHOOK_SECRET_TOKEN not set — falling back to long polling.")
+        logger.info("WEBHOOK not configured — falling back to long polling.")
         application.run_polling(allowed_updates=["message", "edited_message", "channel_post", "edited_channel_post", "callback_query", "my_chat_member", "chat_member"])
 
 if __name__ == "__main__":
