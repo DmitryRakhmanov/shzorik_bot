@@ -508,52 +508,22 @@ async def send_reminders_job(context: ContextTypes.DEFAULT_TYPE):
 
 # -------------------- Main --------------------
 def main():
-    application = Application.builder().token(BOT_TOKEN).build()
-
-    # Channel posts handler (old format + /notify)
-    application.add_handler(MessageHandler(filters.ChatType.CHANNEL, handle_channel_post))
-
-    # Conversation handler for private dialog
-    conv = ConversationHandler(
-        entry_points=[CommandHandler("start", start_command)],
-        states={
-            STATE_CHOOSE_DATE: [CallbackQueryHandler(callback_calendar, pattern=r"^(CAL_PREV#|CAL_NEXT#|DAY#|IGNORE|CANCEL).*$")],
-            STATE_INPUT_TIME: [MessageHandler(filters.TEXT & filters.ChatType.PRIVATE, input_time_handler)],
-            STATE_INPUT_TEXT: [MessageHandler(filters.TEXT & filters.ChatType.PRIVATE, input_text_handler), CommandHandler("cancel", cancel_handler)],
-            STATE_CONFIRM: [CallbackQueryHandler(callback_confirm_save, pattern=r"^(CONFIRM_SAVE|CANCEL)$")],
-        },
-        fallbacks=[CommandHandler("cancel", cancel_handler)],
-        per_user=True,
-        allow_reentry=True,
-        conversation_timeout=60*30
+    application = (
+        ApplicationBuilder()
+        .token(TOKEN)
+        .build()
     )
+
+    # handlers
     application.add_handler(conv)
+    application.add_handler(CommandHandler("start", start))
 
-    # /upcoming
-    application.add_handler(CommandHandler("upcoming", upcoming_notes_command, filters=filters.ChatType.PRIVATE))
+    # job queue (у тебя уже работает через apscheduler)
+    scheduler.start()
 
-    # Ensure job_queue exists (PTB создает его при сборке, если установлены нужные extras)
-    if application.job_queue is None:
-        logger.warning("JobQueue is not available. Make sure python-telegram-bot[job-queue] is installed.")
-    else:
-        # Schedule reminders job: every 60 seconds
-        application.job_queue.run_repeating(send_reminders_job, interval=60, first=10)
+    logger.info("Starting polling mode...")
+    application.run_polling()
 
-    # Decide mode: webhook (if WEBHOOK_URL provided) or polling fallback
-    if WEBHOOK_URL and WEBHOOK_SECRET:
-        logger.info("Starting webhook mode...")
-        # run_webhook — слушаем 0.0.0.0:WEBHOOK_PORT и регистрируем URL у Telegram
-        application.run_webhook(
-            listen="0.0.0.0",
-            port=WEBHOOK_PORT,
-            url_path="telegram",  # путь в сервере (например /telegram)
-            webhook_url=WEBHOOK_URL,
-            secret_token=WEBHOOK_SECRET,
-            allowed_updates=["message", "edited_message", "channel_post", "edited_channel_post", "callback_query", "my_chat_member", "chat_member"]
-        )
-    else:
-        logger.info("WEBHOOK not configured — falling back to long polling.")
-        application.run_polling(allowed_updates=["message", "edited_message", "channel_post", "edited_channel_post", "callback_query", "my_chat_member", "chat_member"])
 
 if __name__ == "__main__":
     main()
