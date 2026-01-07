@@ -1,17 +1,9 @@
+# database.py
 import os
 from datetime import datetime
 from zoneinfo import ZoneInfo
-
 from sqlalchemy import (
-    create_engine,
-    Column,
-    Integer,
-    String,
-    DateTime,
-    Boolean,
-    BigInteger,
-    select,
-    update,
+    create_engine, Column, Integer, String, DateTime, Boolean, select, update, BigInteger
 )
 from sqlalchemy.orm import sessionmaker, declarative_base
 
@@ -21,73 +13,45 @@ try:
 except ImportError:
     pass
 
-
-# ---------- DATABASE CONFIG ----------
 DATABASE_URL = os.environ.get("DATABASE_URL")
 if not DATABASE_URL:
     raise ValueError("DATABASE_URL не задан")
 
-# psycopg v3 (обязательно для Python 3.12+ и SSL)
+# Используем psycopg driver if needed
 if DATABASE_URL.startswith("postgresql://"):
-    DATABASE_URL = DATABASE_URL.replace(
-        "postgresql://", "postgresql+psycopg://", 1
-    )
+    DATABASE_URL = DATABASE_URL.replace("postgresql://", "postgresql+psycopg://", 1)
 
-engine = create_engine(
-    DATABASE_URL,
-    pool_pre_ping=True,   # важно для долгоживущих сервисов
-)
-
-SessionLocal = sessionmaker(
-    bind=engine,
-    autocommit=False,
-    autoflush=False,
-)
-
+engine = create_engine(DATABASE_URL)
+SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 Base = declarative_base()
 
-
-# ---------- MODELS ----------
 class Note(Base):
     __tablename__ = "notes"
-
-    id = Column(Integer, primary_key=True)
+    id = Column(Integer, primary_key=True, index=True)
     user_id = Column(BigInteger, nullable=False)
     text = Column(String, nullable=False)
     hashtags = Column(String, nullable=True)
-
     reminder_date = Column(DateTime(timezone=True), nullable=True)
     reminder_sent = Column(Boolean, default=False)
+    created_at = Column(DateTime(timezone=True), default=lambda: datetime.now(ZoneInfo("UTC")))
 
-    created_at = Column(
-        DateTime(timezone=True),
-        default=lambda: datetime.now(ZoneInfo("UTC")),
-        nullable=False,
-    )
+class Cactus(Base):
+    """
+    Новая таблица для /cactus: хранит одно значение money (int) и время обновления.
+    Если таблица пустая — при установке вставляем запись; при обновлении — перезаписываем первую запись.
+    """
+    __tablename__ = "cactus"
+    id = Column(Integer, primary_key=True, index=True)
+    money = Column(Integer, nullable=False, default=0)
+    updated_at = Column(DateTime(timezone=True), nullable=False, default=lambda: datetime.now(ZoneInfo("UTC")))
 
-
-# ---------- INIT ----------
-def init_db() -> None:
-    """Создать таблицы (без удаления существующих)."""
+def init_db():
     Base.metadata.create_all(bind=engine)
 
-
-# ---------- CRUD ----------
-def add_note(
-    user_id: int,
-    text: str,
-    hashtags: str | None,
-    reminder_date: datetime | None,
-) -> Note:
+def add_note(user_id: int, text: str, hashtags: str, reminder_date):
     session = SessionLocal()
     try:
-        note = Note(
-            user_id=user_id,
-            text=text,
-            hashtags=hashtags,
-            reminder_date=reminder_date,
-            reminder_sent=False,
-        )
+        note = Note(user_id=user_id, text=text, hashtags=hashtags, reminder_date=reminder_date, reminder_sent=False)
         session.add(note)
         session.commit()
         session.refresh(note)
@@ -95,39 +59,62 @@ def add_note(
     finally:
         session.close()
 
-
-def get_upcoming_reminders_window(
-    start_time_utc: datetime,
-    end_time_utc: datetime,
-    only_unsent: bool = True,
-) -> list[Note]:
+def get_upcoming_reminders_window(start_time_utc: datetime, end_time_utc: datetime, only_unsent: bool = True):
     session = SessionLocal()
     try:
         stmt = select(Note).where(
             Note.reminder_date.isnot(None),
             Note.reminder_date >= start_time_utc,
-            Note.reminder_date <= end_time_utc,
+            Note.reminder_date <= end_time_utc
         )
-
         if only_unsent:
-            stmt = stmt.where(Note.reminder_sent.is_(False))
-
+            stmt = stmt.where(Note.reminder_sent == False)
         stmt = stmt.order_by(Note.reminder_date)
         return session.execute(stmt).scalars().all()
     finally:
         session.close()
 
-
-def mark_reminder_sent(note_id: int) -> bool:
+def mark_reminder_sent(note_id: int):
     session = SessionLocal()
     try:
-        stmt = (
-            update(Note)
-            .where(Note.id == note_id)
-            .values(reminder_sent=True)
-        )
+        stmt = update(Note).where(Note.id == note_id).values(reminder_sent=True)
         result = session.execute(stmt)
         session.commit()
         return result.rowcount > 0
+    finally:
+        session.close()
+
+# -------------------- Cactus helpers --------------------
+def get_cactus():
+    """
+    Возвращает объект Cactus или None.
+    """
+    session = SessionLocal()
+    try:
+        stmt = select(Cactus).order_by(Cactus.id)
+        item = session.execute(stmt).scalars().first()
+        return item
+    finally:
+        session.close()
+
+def set_cactus(money: int):
+    """
+    Устанавливает (перезаписывает) значение money и updated_at.
+    Если записи нет — создаёт новую; если есть — обновляет первую запись.
+    """
+    session = SessionLocal()
+    try:
+        now = datetime.now(ZoneInfo("UTC"))
+        existing = session.execute(select(Cactus).order_by(Cactus.id)).scalars().first()
+        if existing:
+            existing.money = int(money)
+            existing.updated_at = now
+            session.add(existing)
+        else:
+            new = Cactus(money=int(money), updated_at=now)
+            session.add(new)
+        session.commit()
+        # вернём текущую запись
+        return session.execute(select(Cactus).order_by(Cactus.id)).scalars().first()
     finally:
         session.close()
