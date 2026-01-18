@@ -572,7 +572,7 @@ def main():
     application.add_handler(MessageHandler(filters.ChatType.CHANNEL, handle_channel_post))
 
     # cactus commands — ВАЖНО: ДО MessageHandler CHANNEL
-    application.add_handler*( CommandHandler("cactus", cactus_command_notify_style, filters=filters.ChatType.PRIVATE | filters.ChatType.GROUPS | filters.ChatType.SUPERGROUP               )                            )
+    application.add_handler*( CommandHandler("cactus", cactus_command_notify_style, filters=filters.ChatType.PRIVATE | filters.ChatType.GROUPS | filters.ChatType.SUPERGROUP))
     application.add_handler(CommandHandler("cactusnew", cactusnew_command, filters=filters.ChatType.PRIVATE))
 
     # Conversation handler
