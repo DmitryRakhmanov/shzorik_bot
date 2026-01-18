@@ -497,50 +497,47 @@ async def send_reminders_job(context: ContextTypes.DEFAULT_TYPE):
 async def ping_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("🏓 Pong! Бот живой.")
 
-# -------------------- New handlers: /cactus and /cactusnew --------------------
+# -------------------- Fixed /cactus command --------------------
 async def cactus_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """
-    /cactus - удаляет сообщение пользователя и отправляет текущую запись из таблицы cactus.
-    Сообщение удаляется автоматически через 60 секунд.
+    /cactus — работает в личке, группах и супергруппах.
+    Удаляет команду пользователя (если возможно) и отправляет текущее значение.
     """
-    if not update.message:
+    message = update.message or update.edited_message
+    if not message:
         return
 
-    chat = update.effective_chat
+    chat = message.chat
     chat_id = chat.id
-    user_msg_id = update.message.message_id
+    user_msg_id = message.message_id
 
-    # попытаемся удалить сообщение пользователя (если права позволяют)
-    try:
-        await try_delete_message(context.bot, chat_id, user_msg_id)
-    except Exception:
-        logger.debug("Не удалось удалить пользовательское сообщение /cactus")
+    # пытаемся удалить команду пользователя (если есть права)
+    await try_delete_message(context.bot, chat_id, user_msg_id)
 
     try:
         cactus = await db_get_cactus()
     except Exception:
-        logger.exception("Ошибка при получении записи кактуса из БД")
+        logger.exception("Ошибка при получении cactus из БД")
         await context.bot.send_message(chat_id=chat_id, text="Ошибка при доступе к БД.")
         return
 
     if not cactus:
-        msg = await context.bot.send_message(chat_id=chat_id, text="На кактусе пока нет записей.")
+        reply = "На кактусе пока нет записей."
     else:
-        dt = None
-        if getattr(cactus, "updated_at", None):
-            dt = cactus.updated_at.astimezone(APP_TZ)
-        elif getattr(cactus, "created_at", None):
-            dt = cactus.created_at.astimezone(APP_TZ)
-        else:
-            dt = datetime.now(APP_TZ)
-        text = f"На кактусе {cactus.money}р. {dt.strftime('%d.%m.%Y %H:%M')}"
-        msg = await context.bot.send_message(chat_id=chat_id, text=text)
+        dt = (
+            cactus.updated_at.astimezone(APP_TZ)
+            if getattr(cactus, "updated_at", None)
+            else datetime.now(APP_TZ)
+        )
+        reply = f"На кактусе {cactus.money}р. {dt.strftime('%d.%m.%Y %H:%M')}"
 
-    # удаляем сообщение через 60 секунд
-    try:
-        asyncio.create_task(schedule_delete(context.bot, chat_id, msg.message_id, 60))
-    except Exception:
-        logger.debug("Failed to schedule cactus message deletion")
+    bot_msg = await context.bot.send_message(chat_id=chat_id, text=reply)
+
+    # автоудаление ответа через 60 сек
+    asyncio.create_task(
+        schedule_delete(context.bot, chat_id, bot_msg.message_id, 60)
+    )
+
 
 async def cactusnew_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """
@@ -585,6 +582,10 @@ def main():
     # Channel posts handler
     application.add_handler(MessageHandler(filters.ChatType.CHANNEL, handle_channel_post))
 
+    # cactus commands — ВАЖНО: ДО MessageHandler CHANNEL
+    application.add_handler(CommandHandler("cactus", cactus_command))
+    application.add_handler(CommandHandler("cactusnew", cactusnew_command, filters=filters.ChatType.PRIVATE))
+
     # Conversation handler
     conv = ConversationHandler(
         entry_points=[CommandHandler("start", start_command)],
@@ -603,10 +604,6 @@ def main():
 
     # upcoming
     application.add_handler(CommandHandler("upcoming", upcoming_notes_command, filters=filters.ChatType.PRIVATE))
-
-    # cactus commands
-    application.add_handler(CommandHandler("cactus", cactus_command))  # доступно в группах/личке
-    application.add_handler(CommandHandler("cactusnew", cactusnew_command, filters=filters.ChatType.PRIVATE))  # только в личке
 
     # job queue
     if application.job_queue is None:
