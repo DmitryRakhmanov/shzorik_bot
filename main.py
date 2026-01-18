@@ -568,13 +568,13 @@ def main():
     # Health test
     application.add_handler(CommandHandler("ping", ping_command, filters=filters.ChatType.PRIVATE))
 
-    # Channel posts handler
-    application.add_handler(MessageHandler(filters.ChatType.CHANNEL, handle_channel_post))
-
     # cactus commands — ВАЖНО: ДО MessageHandler CHANNEL
     application.add_handler*( CommandHandler("cactus", cactus_command_notify_style, filters=filters.ChatType.PRIVATE | filters.ChatType.GROUPS | filters.ChatType.SUPERGROUP))
     application.add_handler(CommandHandler("cactusnew", cactusnew_command, filters=filters.ChatType.PRIVATE))
 
+    # Channel posts handler
+    application.add_handler(MessageHandler(filters.ChatType.CHANNEL, handle_channel_post))
+    
     # Conversation handler
     conv = ConversationHandler(
         entry_points=[CommandHandler("start", start_command)],
