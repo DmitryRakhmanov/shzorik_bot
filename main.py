@@ -249,7 +249,7 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await send_and_track(context, chat_id, "Выберите дату события (месячный календарь):", reply_markup=cal_markup)
         return STATE_CHOOSE_DATE
 
-    await update.message.reply_text("Привет! Для создания напоминания команду /notify.")
+    await update.message.reply_text("Привет! Для создания напоминания используй команду /notify. Узнать сколько на кактусе - /cactus")
 
 async def callback_calendar(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
@@ -569,7 +569,7 @@ def main():
     application.add_handler(CommandHandler("ping", ping_command, filters=filters.ChatType.PRIVATE))
 
     # cactus commands — ВАЖНО: ДО MessageHandler CHANNEL
-    application.add_handler*( CommandHandler("cactus", cactus_command_notify_style, filters=filters.ChatType.PRIVATE | filters.ChatType.GROUPS | filters.ChatType.SUPERGROUP))
+    application.add_handler(CommandHandler("cactus", cactus_command_notify_style, filters=filters.ChatType.PRIVATE | filters.ChatType.GROUPS | filters.ChatType.SUPERGROUP))
     application.add_handler(CommandHandler("cactusnew", cactusnew_command, filters=filters.ChatType.PRIVATE))
 
     # Channel posts handler
