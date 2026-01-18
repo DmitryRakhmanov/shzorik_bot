@@ -168,7 +168,7 @@ async def handle_channel_post(update: Update, context: ContextTypes.DEFAULT_TYPE
     chat_id = chat.id
     msg_id = update.channel_post.message_id
 
-    if text.startswith("/notify"):
+    if text.startswith("/notify") or text.startswith("/cactus"):
         bot_username = context.bot.username
         if not bot_username:
             try:
@@ -180,21 +180,15 @@ async def handle_channel_post(update: Update, context: ContextTypes.DEFAULT_TYPE
         if not bot_username:
             await update.channel_post.reply_text("Ошибка: не могу определить username бота.")
             return
-
-        if text.startswith("/cactus"):
-            bot_username = context.bot.username
-            if not bot_username:
-                try:
-                    me = await context.bot.get_me()
-                    bot_username = me.username
-                except Exception:
-                    bot_username = None
-
-        if not bot_username:
-            await update.channel_post.reply_text("Ошибка: не могу определить username бота.")
-            return
         
-        start_param = f"notify_{chat_id}"
+        if text.startswith("/notify"):
+            start_param = f"notify_{chat_id}"
+            button_text = "Создать интерактивное напоминание в личке"
+            msg_text = "Нажмите, чтобы создать интерактивное напоминание в личных сообщениях бота:"
+        else:  # /cactus
+            start_param = f"cactus_{chat_id}"
+            button_text = "Посмотреть кактус в личке"
+            msg_text = "Нажмите, чтобы увидеть текущий кактус в личных сообщениях:"
         deep_link = f"https://t.me/{bot_username}?start={start_param}"
         kb = InlineKeyboardMarkup([[InlineKeyboardButton("Создать в личных сообщениях", url=deep_link)]])
         bot_msg = await context.bot.send_message(chat_id=chat_id, text="Нажмите, чтобы создать интерактивное напоминание в личных сообщениях бота:", reply_markup=kb)
