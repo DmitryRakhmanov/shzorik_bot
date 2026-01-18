@@ -163,12 +163,14 @@ async def db_set_cactus(money: int):
 async def handle_channel_post(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not update.channel_post:
         return
+
     text = (update.channel_post.text or "").strip()
     chat = update.channel_post.chat
     chat_id = chat.id
     msg_id = update.channel_post.message_id
 
-    if text.startswith("/notify") or text.startswith("/cactus"):
+    # ----------------- /notify -----------------
+    if text.startswith("/notify"):
         bot_username = context.bot.username
         if not bot_username:
             try:
@@ -180,29 +182,42 @@ async def handle_channel_post(update: Update, context: ContextTypes.DEFAULT_TYPE
         if not bot_username:
             await update.channel_post.reply_text("Ошибка: не могу определить username бота.")
             return
-        
-        if text.startswith("/notify"):
-            start_param = f"notify_{chat_id}"
-            button_text = "Создать интерактивное напоминание в личке"
-            msg_text = "Нажмите, чтобы создать интерактивное напоминание в личных сообщениях бота:"
-        else:  # /cactus
-            start_param = f"cactus_{chat_id}"
-            button_text = "Посмотреть кактус в личке"
-            msg_text = "Нажмите, чтобы увидеть текущий кактус в личных сообщениях:"
+
+        start_param = f"notify_{chat_id}"
         deep_link = f"https://t.me/{bot_username}?start={start_param}"
         kb = InlineKeyboardMarkup([[InlineKeyboardButton("Создать в личных сообщениях", url=deep_link)]])
-        bot_msg = await context.bot.send_message(chat_id=chat_id, text="Нажмите, чтобы создать интерактивное напоминание в личных сообщениях бота:", reply_markup=kb)
-        bot_msg_id = bot_msg.message_id
+        bot_msg = await context.bot.send_message(
+            chat_id=chat_id,
+            text="Нажмите, чтобы создать интерактивное напоминание в личных сообщениях бота:",
+            reply_markup=kb
+        )
 
+        # удаляем команду пользователя
         await try_delete_message(context.bot, chat_id, msg_id)
+        # автоудаление кнопки через 30 секунд
+        asyncio.create_task(schedule_delete(context.bot, chat_id, bot_msg.message_id, 30))
+        return
+
+    # ----------------- /cactus -----------------
+    if text.startswith("/cactus"):
         try:
-            asyncio.create_task(schedule_delete(context.bot, chat_id, bot_msg_id, 30))
+            cactus = await db_get_cactus()
         except Exception:
-            logger.debug("Failed to schedule quick deletion; falling back to scheduled deletion")
-        try:
-            asyncio.create_task(schedule_delete(context.bot, chat_id, bot_msg_id, DELETE_DELAY_SECONDS))
-        except Exception:
-            logger.debug("Failed to schedule fallback deletion")
+            logger.exception("Ошибка при получении cactus из БД")
+            await context.bot.send_message(chat_id=chat_id, text="Ошибка при доступе к БД.")
+            return
+
+        if not cactus:
+            reply = "На кактусе пока нет записей."
+        else:
+            dt = cactus.updated_at.astimezone(APP_TZ)
+            reply = f"На кактусе {cactus.money}р. {dt.strftime('%d.%m.%Y %H:%M')}"
+
+        bot_msg = await context.bot.send_message(chat_id=chat_id, text=reply)
+        # автоудаление через 60 секунд
+        asyncio.create_task(schedule_delete(context.bot, chat_id, bot_msg.message_id, 60))
+        # удаляем команду пользователя сразу
+        await try_delete_message(context.bot, chat_id, msg_id)
         return
 
     hashtags = re.findall(r"#[\wа-яА-ЯёЁ]+", text)
