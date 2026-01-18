@@ -497,13 +497,9 @@ async def send_reminders_job(context: ContextTypes.DEFAULT_TYPE):
 async def ping_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("🏓 Pong! Бот живой.")
 
-# -------------------- Fixed /cactus command --------------------
-async def cactus_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """
-    /cactus — работает в личке, группах и супергруппах.
-    Удаляет команду пользователя (если возможно) и отправляет текущее значение.
-    """
-    message = update.message or update.edited_message
+# -------------------- /cactus handler по аналогии с /notify --------------------
+async def cactus_command_notify_style(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    message = update.message
     if not message:
         return
 
@@ -511,7 +507,7 @@ async def cactus_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = chat.id
     user_msg_id = message.message_id
 
-    # пытаемся удалить команду пользователя (если есть права)
+    # пробуем удалить команду пользователя
     await try_delete_message(context.bot, chat_id, user_msg_id)
 
     try:
@@ -524,20 +520,13 @@ async def cactus_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not cactus:
         reply = "На кактусе пока нет записей."
     else:
-        dt = (
-            cactus.updated_at.astimezone(APP_TZ)
-            if getattr(cactus, "updated_at", None)
-            else datetime.now(APP_TZ)
-        )
+        dt = cactus.updated_at.astimezone(APP_TZ)
         reply = f"На кактусе {cactus.money}р. {dt.strftime('%d.%m.%Y %H:%M')}"
 
     bot_msg = await context.bot.send_message(chat_id=chat_id, text=reply)
 
-    # автоудаление ответа через 60 сек
-    asyncio.create_task(
-        schedule_delete(context.bot, chat_id, bot_msg.message_id, 60)
-    )
-
+    # автоудаление через 60 секунд
+    asyncio.create_task(schedule_delete(context.bot, chat_id, bot_msg.message_id, 60))
 
 async def cactusnew_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """
@@ -583,7 +572,13 @@ def main():
     application.add_handler(MessageHandler(filters.ChatType.CHANNEL, handle_channel_post))
 
     # cactus commands — ВАЖНО: ДО MessageHandler CHANNEL
-    application.add_handler(CommandHandler("cactus", cactus_command))
+    application.add_handler(
+    CommandHandler(
+        "cactus",
+        cactus_command_notify_style,
+        filters=filters.ChatType.PRIVATE | filters.ChatType.GROUPS | filters.ChatType.SUPERGROUP
+    )
+)
     application.add_handler(CommandHandler("cactusnew", cactusnew_command, filters=filters.ChatType.PRIVATE))
 
     # Conversation handler
