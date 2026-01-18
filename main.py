@@ -198,7 +198,28 @@ async def handle_channel_post(update: Update, context: ContextTypes.DEFAULT_TYPE
         asyncio.create_task(schedule_delete(context.bot, chat_id, bot_msg.message_id, 30))
         return
 
-    
+    # ----------------- /cactus -----------------
+    if text.startswith("/cactus"):
+        try:
+            cactus = await db_get_cactus()
+        except Exception:
+            logger.exception("Ошибка при получении cactus из БД")
+            await context.bot.send_message(chat_id=chat_id, text="Ошибка при доступе к БД.")
+            return
+
+        if not cactus:
+            reply = "На кактусе пока нет записей."
+        else:
+            dt = cactus.updated_at.astimezone(APP_TZ)
+            reply = f"На кактусе {cactus.money}р. {dt.strftime('%d.%m.%Y %H:%M')}"
+
+        bot_msg = await context.bot.send_message(chat_id=chat_id, text=reply,reply_markup=kb)
+        # удаляем команду пользователя сразу
+        await try_delete_message(context.bot, chat_id, msg_id)
+        # автоудаление через 60 секунд
+        asyncio.create_task(schedule_delete(context.bot, chat_id, bot_msg.message_id, 60))
+        return
+
     hashtags = re.findall(r"#[\wа-яА-ЯёЁ]+", text)
     dt_match = re.search(r"@(\d{2}:\d{2}) (\d{2}-\d{2}-\d{4})", text)
     if "#напоминание" not in hashtags or not dt_match:
@@ -576,7 +597,7 @@ def main():
     application.add_handler(CommandHandler("ping", ping_command, filters=filters.ChatType.PRIVATE))
 
     # cactus commands — ВАЖНО: ДО MessageHandler CHANNEL
-    application.add_handler(CommandHandler("cactus", cactus_command_notify_style, filters=filters.ChatType.PRIVATE | filters.ChatType.GROUPS | filters.ChatType.SUPERGROUP))
+    application.add_handler(CommandHandler("cactus", cactus_command_notify_style, filters=filters.ALL))
     application.add_handler(CommandHandler("cactusnew", cactusnew_command, filters=filters.ChatType.PRIVATE))
 
     # Channel posts handler
