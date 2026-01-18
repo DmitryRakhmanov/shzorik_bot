@@ -213,7 +213,7 @@ async def handle_channel_post(update: Update, context: ContextTypes.DEFAULT_TYPE
             dt = cactus.updated_at.astimezone(APP_TZ)
             reply = f"На кактусе {cactus.money}р. {dt.strftime('%d.%m.%Y %H:%M')}"
 
-        bot_msg = await context.bot.send_message(chat_id=chat_id, text=reply,reply_markup=kb)
+        bot_msg = await context.bot.send_message(chat_id=chat_id, text=reply)
         # удаляем команду пользователя сразу
         await try_delete_message(context.bot, chat_id, msg_id)
         # автоудаление через 60 секунд
