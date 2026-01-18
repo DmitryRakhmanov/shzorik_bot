@@ -198,28 +198,7 @@ async def handle_channel_post(update: Update, context: ContextTypes.DEFAULT_TYPE
         asyncio.create_task(schedule_delete(context.bot, chat_id, bot_msg.message_id, 30))
         return
 
-    # ----------------- /cactus -----------------
-    if text.startswith("/cactus"):
-        try:
-            cactus = await db_get_cactus()
-        except Exception:
-            logger.exception("Ошибка при получении cactus из БД")
-            await context.bot.send_message(chat_id=chat_id, text="Ошибка при доступе к БД.")
-            return
-
-        if not cactus:
-            reply = "На кактусе пока нет записей."
-        else:
-            dt = cactus.updated_at.astimezone(APP_TZ)
-            reply = f"На кактусе {cactus.money}р. {dt.strftime('%d.%m.%Y %H:%M')}"
-
-        bot_msg = await context.bot.send_message(chat_id=chat_id, text=reply,reply_markup=kb)
-        # автоудаление через 60 секунд
-        asyncio.create_task(schedule_delete(context.bot, chat_id, bot_msg.message_id, 60))
-        # удаляем команду пользователя сразу
-        await try_delete_message(context.bot, chat_id, msg_id)
-        return
-
+    
     hashtags = re.findall(r"#[\wа-яА-ЯёЁ]+", text)
     dt_match = re.search(r"@(\d{2}:\d{2}) (\d{2}-\d{2}-\d{4})", text)
     if "#напоминание" not in hashtags or not dt_match:
@@ -521,22 +500,27 @@ async def ping_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 # -------------------- /cactus handler по аналогии с /notify --------------------
 async def cactus_command_notify_style(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    message = update.message
+    """
+    /cactus — показывает текущее значение кактуса.
+    В группе/супергруппе удаляет команду пользователя сразу,
+    ответное сообщение удаляется через 60 секунд.
+    """
+    message = update.effective_message
     if not message:
         return
 
     chat_id = message.chat.id
     user_msg_id = message.message_id
 
-    # удаляем команду пользователя сразу
+    # Удаляем команду пользователя сразу
     await try_delete_message(context.bot, chat_id, user_msg_id)
 
-    # получаем данные кактуса
+    # Получаем данные кактуса из БД
     try:
         cactus = await db_get_cactus()
     except Exception:
         logger.exception("Ошибка при получении cactus из БД")
-        await context.bot.send_message(chat_id=chat_id, text="Ошибка при доступе к БД.")
+        await message.reply_text("Ошибка при доступе к БД.")
         return
 
     if not cactus:
@@ -545,9 +529,11 @@ async def cactus_command_notify_style(update: Update, context: ContextTypes.DEFA
         dt = cactus.updated_at.astimezone(APP_TZ)
         reply = f"На кактусе {cactus.money}р. {dt.strftime('%d.%m.%Y %H:%M')}"
 
+    # Отправляем сообщение с данными
     bot_msg = await context.bot.send_message(chat_id=chat_id, text=reply)
-    # автоудаление через 60 секунд
+    # Автоудаление через 60 секунд
     asyncio.create_task(schedule_delete(context.bot, chat_id, bot_msg.message_id, 60))
+
 
 async def cactusnew_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """
