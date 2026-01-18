@@ -213,7 +213,7 @@ async def handle_channel_post(update: Update, context: ContextTypes.DEFAULT_TYPE
             dt = cactus.updated_at.astimezone(APP_TZ)
             reply = f"На кактусе {cactus.money}р. {dt.strftime('%d.%m.%Y %H:%M')}"
 
-        bot_msg = await context.bot.send_message(chat_id=chat_id, text=reply)
+        bot_msg = await context.bot.send_message(chat_id=chat_id, text=reply,reply_markup=kb)
         # автоудаление через 60 секунд
         asyncio.create_task(schedule_delete(context.bot, chat_id, bot_msg.message_id, 60))
         # удаляем команду пользователя сразу
@@ -525,13 +525,13 @@ async def cactus_command_notify_style(update: Update, context: ContextTypes.DEFA
     if not message:
         return
 
-    chat = message.chat
-    chat_id = chat.id
+    chat_id = message.chat.id
     user_msg_id = message.message_id
 
-    # пробуем удалить команду пользователя
+    # удаляем команду пользователя сразу
     await try_delete_message(context.bot, chat_id, user_msg_id)
 
+    # получаем данные кактуса
     try:
         cactus = await db_get_cactus()
     except Exception:
@@ -546,7 +546,6 @@ async def cactus_command_notify_style(update: Update, context: ContextTypes.DEFA
         reply = f"На кактусе {cactus.money}р. {dt.strftime('%d.%m.%Y %H:%M')}"
 
     bot_msg = await context.bot.send_message(chat_id=chat_id, text=reply)
-
     # автоудаление через 60 секунд
     asyncio.create_task(schedule_delete(context.bot, chat_id, bot_msg.message_id, 60))
 
