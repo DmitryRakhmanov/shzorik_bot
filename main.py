@@ -181,6 +181,19 @@ async def handle_channel_post(update: Update, context: ContextTypes.DEFAULT_TYPE
             await update.channel_post.reply_text("Ошибка: не могу определить username бота.")
             return
 
+        if text.startswith("/cactus"):
+            bot_username = context.bot.username
+            if not bot_username:
+                try:
+                    me = await context.bot.get_me()
+                    bot_username = me.username
+                except Exception:
+                    bot_username = None
+
+        if not bot_username:
+            await update.channel_post.reply_text("Ошибка: не могу определить username бота.")
+            return
+        
         start_param = f"notify_{chat_id}"
         deep_link = f"https://t.me/{bot_username}?start={start_param}"
         kb = InlineKeyboardMarkup([[InlineKeyboardButton("Создать в личных сообщениях", url=deep_link)]])
