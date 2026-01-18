@@ -8,7 +8,11 @@ from datetime import datetime, timedelta, date
 from zoneinfo import ZoneInfo
 from typing import Optional
 
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram import (
+    Update,
+    InlineKeyboardButton,
+    InlineKeyboardMarkup,
+)
 from telegram.ext import (
     ApplicationBuilder,
     CommandHandler,
@@ -18,20 +22,21 @@ from telegram.ext import (
     ContextTypes,
     filters,
 )
+
 from dotenv import load_dotenv
 
 # DB (синхронный) — будем запускать в executor
 from database import init_db, add_note, get_upcoming_reminders_window, mark_reminder_sent
+# Добавленные импортируемые функции (не меняя старую строку)
+from database import get_latest_cactus, upsert_cactus
 
 # -------------------- CONFIG --------------------
-logging.basicConfig(
-    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s", level=logging.INFO
-)
+logging.basicConfig(format="%(asctime)s - %(name)s - %(levelname)s - %(message)s", level=logging.INFO)
 logger = logging.getLogger(__name__)
 load_dotenv()
 
 BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN") or os.environ.get("BOT_TOKEN")
-WEBHOOK_URL = os.environ.get("WEBHOOK_URL")
+WEBHOOK_URL = os.environ.get("WEBHOOK_URL")  # если задан — webhook mode
 WEBHOOK_SECRET = os.environ.get("WEBHOOK_SECRET_TOKEN")
 WEBHOOK_PORT = int(os.environ.get("PORT", 10000))
 TZ_NAME = os.environ.get("TZ", "Europe/Moscow")
@@ -118,6 +123,7 @@ async def cleanup_messages(context: ContextTypes.DEFAULT_TYPE, keep_final: bool 
         except Exception:
             pass
     ud["msg_ids"] = []
+    return
 
 async def try_delete_message(bot, chat_id: int, message_id: int):
     try:
@@ -131,7 +137,7 @@ async def schedule_delete(bot, chat_id: int, message_id: int, delay: int):
     await asyncio.sleep(delay)
     await try_delete_message(bot, chat_id, message_id)
 
-# -------------------- DB wrappers --------------------
+# -------------------- DB wrappers (run sync DB funcs in executor) --------------------
 async def db_add_note(user_id: int, text: str, hashtags: str, reminder_date):
     loop = asyncio.get_running_loop()
     return await loop.run_in_executor(None, add_note, user_id, text, hashtags, reminder_date)
@@ -143,6 +149,15 @@ async def db_get_upcoming(start_time_utc: datetime, end_time_utc: datetime, only
 async def db_mark_reminder_sent(note_id: int):
     loop = asyncio.get_running_loop()
     return await loop.run_in_executor(None, mark_reminder_sent, note_id)
+
+# -------------------- New DB wrappers for cactus (async wrappers) --------------------
+async def db_get_cactus():
+    loop = asyncio.get_running_loop()
+    return await loop.run_in_executor(None, get_latest_cactus)
+
+async def db_set_cactus(money: int):
+    loop = asyncio.get_running_loop()
+    return await loop.run_in_executor(None, upsert_cactus, money)
 
 # -------------------- Handlers --------------------
 async def handle_channel_post(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -161,6 +176,7 @@ async def handle_channel_post(update: Update, context: ContextTypes.DEFAULT_TYPE
                 bot_username = me.username
             except Exception:
                 bot_username = None
+
         if not bot_username:
             await update.channel_post.reply_text("Ошибка: не могу определить username бота.")
             return
@@ -174,9 +190,12 @@ async def handle_channel_post(update: Update, context: ContextTypes.DEFAULT_TYPE
         await try_delete_message(context.bot, chat_id, msg_id)
         try:
             asyncio.create_task(schedule_delete(context.bot, chat_id, bot_msg_id, 30))
+        except Exception:
+            logger.debug("Failed to schedule quick deletion; falling back to scheduled deletion")
+        try:
             asyncio.create_task(schedule_delete(context.bot, chat_id, bot_msg_id, DELETE_DELAY_SECONDS))
         except Exception:
-            logger.debug("Failed to schedule deletion")
+            logger.debug("Failed to schedule fallback deletion")
         return
 
     hashtags = re.findall(r"#[\wа-яА-ЯёЁ]+", text)
@@ -204,7 +223,6 @@ async def handle_channel_post(update: Update, context: ContextTypes.DEFAULT_TYPE
         logger.exception("Error saving channel reminder")
         await context.bot.send_message(chat_id=chat_id, text="Ошибка при сохранении напоминания.")
 
-# -------------------- Conversation handlers --------------------
 async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     args = context.args or []
     payload = args[0] if args else None
@@ -231,9 +249,8 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await send_and_track(context, chat_id, "Выберите дату события (месячный календарь):", reply_markup=cal_markup)
         return STATE_CHOOSE_DATE
 
-    await update.message.reply_text("Привет! Для создания напоминания используйте кнопку из канала или /start notify_<channel_id>.")
+    await update.message.reply_text("Привет! Для создания напоминания команду /notify.")
 
-# Calendar callback
 async def callback_calendar(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
@@ -276,6 +293,7 @@ async def callback_calendar(update: Update, context: ContextTypes.DEFAULT_TYPE):
         min_date = today + timedelta(days=1)
         max_date = today + timedelta(days=365)
         if chosen < min_date or chosen > max_date:
+            await query.edit_message_text("Выбранная дата вне допустимого диапазона. Выберите другую дату.")
             cal_markup = build_month_calendar(int(y), int(m), min_date, max_date)
             await query.edit_message_text("Выберите дату события (месячный календарь):", reply_markup=cal_markup)
             return STATE_CHOOSE_DATE
@@ -285,14 +303,16 @@ async def callback_calendar(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await query.edit_message_text(f"Вы выбрали: {chosen.strftime('%d-%m-%Y')}\n\nВведите время в формате HH:MM (например, 14:30):", reply_markup=cancel_kb)
         return STATE_INPUT_TIME
 
-# Input time handler
+    return
+
+# Input time handler - expects HH:MM
 async def input_time_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = (update.message.text or "").strip()
     chat_id = update.effective_chat.id
 
     m = re.match(r"^([0-2]?\d):([0-5]\d)$", text)
     if not m:
-        await update.message.reply_text("Неверный формат времени. Введите HH:MM.", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("Отмена", callback_data="CANCEL")]]))
+        await update.message.reply_text("Неверный формат времени. Введите в формате HH:MM (например, 09:05 или 21:30).", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("Отмена", callback_data="CANCEL")]]))
         return STATE_INPUT_TIME
 
     hour = int(m.group(1))
@@ -309,16 +329,16 @@ async def input_time_handler(update: Update, context: ContextTypes.DEFAULT_TYPE)
     dt = datetime(ev_date.year, ev_date.month, ev_date.day, hour, minute, tzinfo=APP_TZ)
     now = datetime.now(APP_TZ)
     if dt < now + timedelta(days=1):
-        await update.message.reply_text("Время события должно быть не ранее, чем через 24 часа.", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("Отмена", callback_data="CANCEL")]]))
+        await update.message.reply_text("Время события должно быть не ранее, чем через 24 часа. Введите другое время.", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("Отмена", callback_data="CANCEL")]]))
         return STATE_INPUT_TIME
 
     context.user_data["event_hour"] = hour
     context.user_data["event_minute"] = minute
 
-    await send_and_track(context, chat_id, "Введите текст напоминания:", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("Отмена", callback_data="CANCEL")]]))
+    await send_and_track(context, chat_id, "Введите текст напоминания (одно сообщение):", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("Отмена", callback_data="CANCEL")]]))
     return STATE_INPUT_TEXT
 
-# Input text handler
+# Input text handler - user supplies event text
 async def input_text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = (update.message.text or "").strip()
     chat_id = update.effective_chat.id
@@ -349,7 +369,7 @@ async def input_text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE)
     context.user_data["final_message_id"] = msg.message_id
     return STATE_CONFIRM
 
-# Confirm save
+# Confirm and save
 async def callback_confirm_save(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
@@ -377,7 +397,10 @@ async def callback_confirm_save(update: Update, context: ContextTypes.DEFAULT_TY
 
         hashtags = parse_hashtags(text)
         if "#напоминание" not in hashtags.split():
-            hashtags = (hashtags + " #напоминание").strip() if hashtags else "#напоминание"
+            if hashtags:
+                hashtags = (hashtags + " #напоминание").strip()
+            else:
+                hashtags = "#напоминание"
 
         text_with_event = f"{text} (событие: {event_dt.strftime('%H:%M %d-%m-%Y')})"
 
@@ -389,18 +412,26 @@ async def callback_confirm_save(update: Update, context: ContextTypes.DEFAULT_TY
             await cleanup_messages(context)
             return ConversationHandler.END
 
-        await query.edit_message_text("✅ Напоминание сохранено.")
+        await query.edit_message_text("✅ Напоминание сохранено. Финальное подтверждение в личных сообщениях.")
 
         final = await context.bot.send_message(
             chat_id=context.user_data.get("dialog_chat_id"),
-            text=(f"Новое напоминание создано:\n«{text_with_event}»\n{hashtags}")
+            text=(
+                "Новое напоминание создано:\n"
+                f"«{text_with_event}»\n"
+                f"{hashtags}"
+            )
         )
         context.user_data["final_message_id"] = final.message_id
 
         try:
             await context.bot.send_message(
                 chat_id=channel_id,
-                text=(f"🔔 Новое напоминание создано:\n«{text_with_event}»\n{hashtags}")
+                text=(
+                    "🔔 Новое напоминание создано:\n"
+                    f"«{text_with_event}»\n"
+                    f"{hashtags}"
+                )
             )
         except Exception:
             logger.warning(f"Could not post confirmation to channel {channel_id}. Bot may lack post rights.")
@@ -408,13 +439,15 @@ async def callback_confirm_save(update: Update, context: ContextTypes.DEFAULT_TY
         await cleanup_messages(context, keep_final=True)
         return ConversationHandler.END
 
-# Cancel
+    return
+
+# Cancel text command
 async def cancel_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("Диалог отменён.")
     await cleanup_messages(context)
     return ConversationHandler.END
 
-# Upcoming notes
+# Simple /upcoming command in private
 async def upcoming_notes_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     now_utc = datetime.now(ZoneInfo("UTC"))
     future_utc = now_utc + timedelta(days=365)
@@ -432,36 +465,127 @@ async def upcoming_notes_command(update: Update, context: ContextTypes.DEFAULT_T
         logger.exception("Error fetching upcoming notes")
         await update.message.reply_text("Ошибка при получении напоминаний.")
 
-# Reminders job
+# -------------------- Reminders job (integrated) --------------------
 async def send_reminders_job(context: ContextTypes.DEFAULT_TYPE):
     try:
         now_utc = datetime.now(ZoneInfo("UTC"))
         window_start_utc = now_utc - timedelta(minutes=20)
         window_end_utc = now_utc + timedelta(minutes=5)
+
         upcoming = await db_get_upcoming(window_start_utc, window_end_utc, only_unsent=True)
+        logger.info(f"Reminders job: found {len(upcoming)} reminders in window {window_start_utc}..{window_end_utc}")
+
         if not upcoming:
             return
+
+        sent_count = 0
         for note in upcoming:
             try:
-                await context.bot.send_message(chat_id=note.user_id, text=f"🔔 Напоминание:\n«{note.text}»\n")
+                message_text = f"🔔 Напоминание:\n«{note.text}»\n"
+                await context.bot.send_message(chat_id=note.user_id, text=message_text)
                 await db_mark_reminder_sent(note.id)
-            except Exception:
-                logger.exception(f"Failed to send reminder {getattr(note, 'id', 'unknown')}")
+                logger.info(f"Sent reminder {note.id} to {note.user_id}")
+                sent_count += 1
+            except Exception as e:
+                logger.exception(f"Failed to send reminder {getattr(note, 'id', 'unknown')}: {e}")
+
+        logger.info(f"Reminders job: sent {sent_count} messages")
     except Exception:
         logger.exception("Reminders job failed")
 
-# Ping
+# -------------------- Health test --------------------
 async def ping_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("🏓 Pong! Бот живой.")
 
+# -------------------- New handlers: /cactus and /cactusnew --------------------
+async def cactus_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """
+    /cactus - удаляет сообщение пользователя и отправляет текущую запись из таблицы cactus.
+    Сообщение удаляется автоматически через 60 секунд.
+    """
+    if not update.message:
+        return
+
+    chat = update.effective_chat
+    chat_id = chat.id
+    user_msg_id = update.message.message_id
+
+    # попытаемся удалить сообщение пользователя (если права позволяют)
+    try:
+        await try_delete_message(context.bot, chat_id, user_msg_id)
+    except Exception:
+        logger.debug("Не удалось удалить пользовательское сообщение /cactus")
+
+    try:
+        cactus = await db_get_cactus()
+    except Exception:
+        logger.exception("Ошибка при получении записи кактуса из БД")
+        await context.bot.send_message(chat_id=chat_id, text="Ошибка при доступе к БД.")
+        return
+
+    if not cactus:
+        msg = await context.bot.send_message(chat_id=chat_id, text="На кактусе пока нет записей.")
+    else:
+        dt = None
+        if getattr(cactus, "updated_at", None):
+            dt = cactus.updated_at.astimezone(APP_TZ)
+        elif getattr(cactus, "created_at", None):
+            dt = cactus.created_at.astimezone(APP_TZ)
+        else:
+            dt = datetime.now(APP_TZ)
+        text = f"На кактусе {cactus.money}р. {dt.strftime('%d.%m.%Y %H:%M')}"
+        msg = await context.bot.send_message(chat_id=chat_id, text=text)
+
+    # удаляем сообщение через 60 секунд
+    try:
+        asyncio.create_task(schedule_delete(context.bot, chat_id, msg.message_id, 60))
+    except Exception:
+        logger.debug("Failed to schedule cactus message deletion")
+
+async def cactusnew_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """
+    /cactusnew <sum> - только в личке.
+    Обновляет (или создаёт) запись кактуса: money = <sum>, updated_at = now.
+    """
+    if update.effective_chat.type != "private":
+        await update.message.reply_text("Команду /cactusnew можно вызывать только в личных сообщениях боту.")
+        return
+
+    args = context.args or []
+    if not args:
+        await update.message.reply_text("Использование: /cactusnew <сумма>\nПример: /cactusnew 25")
+        return
+
+    try:
+        # допускаем целые или дробные, но сохраним как int
+        parsed = float(args[0].replace(",", "."))
+        money = int(parsed)
+    except Exception:
+        await update.message.reply_text("Неверный формат суммы. Введите число, например: /cactusnew 25")
+        return
+
+    try:
+        cactus = await db_set_cactus(money)
+    except Exception:
+        logger.exception("Ошибка при обновлении записи кактуса в БД")
+        await update.message.reply_text("Ошибка при сохранении в БД.")
+        return
+
+    dt = cactus.updated_at.astimezone(APP_TZ) if getattr(cactus, "updated_at", None) else (cactus.created_at.astimezone(APP_TZ) if getattr(cactus, "created_at", None) else datetime.now(APP_TZ))
+    await update.message.reply_text(f"Значение обновлено: {cactus.money}р. {dt.strftime('%d.%m.%Y %H:%M')}")
+
 # -------------------- Main --------------------
 def main():
+    # Use ApplicationBuilder to avoid NameError
     application = ApplicationBuilder().token(BOT_TOKEN).build()
 
-    # Handlers
+    # Health test
     application.add_handler(CommandHandler("ping", ping_command, filters=filters.ChatType.PRIVATE))
+
+    # Channel posts handler
     application.add_handler(MessageHandler(filters.ChatType.CHANNEL, handle_channel_post))
 
+    # Conversation handler
     conv = ConversationHandler(
         entry_points=[CommandHandler("start", start_command)],
         states={
@@ -477,24 +601,33 @@ def main():
     )
     application.add_handler(conv)
 
+    # upcoming
     application.add_handler(CommandHandler("upcoming", upcoming_notes_command, filters=filters.ChatType.PRIVATE))
 
-    # Job queue
-    if application.job_queue:
+    # cactus commands
+    application.add_handler(CommandHandler("cactus", cactus_command))  # доступно в группах/личке
+    application.add_handler(CommandHandler("cactusnew", cactusnew_command, filters=filters.ChatType.PRIVATE))  # только в личке
+
+    # job queue
+    if application.job_queue is None:
+        logger.warning("JobQueue is not available. Ensure python-telegram-bot[job-queue] is installed.")
+    else:
         application.job_queue.run_repeating(send_reminders_job, interval=60, first=10)
 
-    # Run
+    # choose mode
     if WEBHOOK_URL and WEBHOOK_SECRET:
+        logger.info("Starting webhook mode...")
         application.run_webhook(
             listen="0.0.0.0",
             port=WEBHOOK_PORT,
             url_path="telegram",
             webhook_url=WEBHOOK_URL,
             secret_token=WEBHOOK_SECRET,
-            allowed_updates=["message","edited_message","channel_post","edited_channel_post","callback_query","my_chat_member","chat_member"]
+            allowed_updates=["message", "edited_message", "channel_post", "edited_channel_post", "callback_query", "my_chat_member", "chat_member"]
         )
     else:
-        application.run_polling(allowed_updates=["message","edited_message","channel_post","edited_channel_post","callback_query","my_chat_member","chat_member"])
+        logger.info("WEBHOOK not configured — falling back to long polling.")
+        application.run_polling(allowed_updates=["message", "edited_message", "channel_post", "edited_channel_post", "callback_query", "my_chat_member", "chat_member"])
 
 if __name__ == "__main__":
     main()
